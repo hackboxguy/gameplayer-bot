@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*.pyo
+tests/sample_frames/*.png
+tests/sample_frames/*.jpg

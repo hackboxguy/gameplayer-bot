@@ -1,0 +1,15 @@
+[Unit]
+Description=gameplayer-bot Game Player
+After=gameplayer-bot-gadget.service
+Requires=gameplayer-bot-gadget.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/bin/python3 /home/pi/gameplayer-bot/src/main.py
+WorkingDirectory=/home/pi/gameplayer-bot
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

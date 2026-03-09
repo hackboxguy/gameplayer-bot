@@ -1,0 +1,12 @@
+[Unit]
+Description=gameplayer-bot USB HID Gadget Setup
+After=sysinit.target
+ConditionPathIsDirectory=/sys/kernel/config/usb_gadget
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/gameplayer-bot-gadget.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
