@@ -40,6 +40,7 @@ class ChromeDinoPlugin(GamePlugin):
         self._peak_lower = 0
         self._peak_upper = 0
         self._peak_mr = 0.0
+        self._peak_ignore = 0
 
     def setup(self, config):
         self._trigger_threshold = config.getint(
@@ -91,17 +92,15 @@ class ChromeDinoPlugin(GamePlugin):
         # Pixels that changed by more than 30 brightness levels = motion
         _, motion = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
 
-        # Scan area: strip ahead of dino.
-        # Dino at ~10-15%. Scan 28-38% = tighter to avoid early trigger
-        # on wide obstacles (4-cactus clusters) at low speed.
-        # Three vertical zones:
-        #   0-35%:  ignore (stars, moon, high pterodactyl = safe to run)
-        #   35-55%: duck zone (medium pterodactyl at face level)
-        #   55-100%: jump zone (cactus, low pterodactyl at ground level)
-        x_start = int(w * 0.28)
-        x_end = int(w * 0.38)
-        y_ignore = int(h * 0.35)  # above this: stars/moon/high ptero
-        y_duck_end = int(h * 0.55)  # duck zone: 35-55%
+        # Two scan strips ahead of dino (at ~10-15%):
+        #   Jump strip: 27-33% — slightly ahead for earlier jump trigger
+        #   Duck strip: 20-34% — wider to catch fast pterodactyls
+        # Bottom 40% (y>=60%) for ground obstacles, top 60% for pteros.
+        jx_start = int(w * 0.27)
+        jx_end = int(w * 0.33)
+        dx_start = int(w * 0.20)
+        dx_end = int(w * 0.34)
+        y_ground = int(h * 0.60)
 
         # Check for scene-wide change (game over, restart, etc.)
         total_motion = int(np.sum(motion > 0))
@@ -109,36 +108,41 @@ class ChromeDinoPlugin(GamePlugin):
         motion_ratio = total_motion / total_pixels
         scene_change = motion_ratio > 0.15
 
-        scan = motion[y_ignore:, x_start:x_end]
-        duck_zone = motion[y_ignore:y_duck_end, x_start:x_end]
-        jump_zone = motion[y_duck_end:, x_start:x_end]
+        scan = motion[y_ground:, jx_start:jx_end]
+        upper_zone = motion[:y_ground, dx_start:dx_end]
 
-        duck_sum = int(np.sum(duck_zone > 0))
-        jump_sum = int(np.sum(jump_zone > 0))
+        scan_sum = int(np.sum(scan > 0))
+        upper_sum = int(np.sum(upper_zone > 0))
 
         # Suppress triggers during scene changes (game over/restart)
         if scene_change:
             duck_triggered = False
             jump_triggered = False
         else:
-            duck_triggered = duck_sum > self._trigger_threshold
-            jump_triggered = jump_sum > self._trigger_threshold
+            jump_triggered = scan_sum > self._trigger_threshold
+            duck_triggered = False
+            # Upper zone motion without ground motion = pterodactyl
+            # (cactuses always have ground motion; pteros float above)
+            if upper_sum > self._trigger_threshold and not jump_triggered:
+                duck_triggered = True   # duck to avoid face-level ptero
 
         # Save debug images after camera stabilizes
         self._frame_count += 1
         if self._frame_count == 30:
             self._save_debug(gray, diff, scan)
-            print(f"  Scan: x[{x_start}:{x_end}] y_ign={y_ignore}"
-                  f" y_duck_end={y_duck_end} diff_thresh=30")
+            print(f"  Jump: x[{jx_start}:{jx_end}] Duck: x[{dx_start}:{dx_end}]"
+                  f" y_ground={y_ground} diff_thresh=30")
 
         # Peak tracking (reset each 5-sec interval from main loop)
-        self._peak_lower = max(self._peak_lower, jump_sum)
-        self._peak_upper = max(self._peak_upper, duck_sum)
+        self._peak_lower = max(self._peak_lower, scan_sum)
+        self._peak_upper = max(self._peak_upper, upper_sum)
         self._peak_mr = max(self._peak_mr, motion_ratio)
+        self._peak_ignore = 0
 
         # Debug stats
-        self._debug_lower = jump_sum
-        self._debug_upper = duck_sum
+        self._debug_lower = scan_sum
+        self._debug_upper = upper_sum
+        self._debug_ignore = upper_sum
         self._debug_thresh = 30
         self._debug_scene_change = scene_change
         self._debug_motion_ratio = motion_ratio
@@ -165,7 +169,7 @@ class ChromeDinoPlugin(GamePlugin):
         # must be ducked, not jumped into.
         if state["duck"]:
             print(f"  >> DUCK jmp={self._debug_lower} dck={self._debug_upper}"
-                  f" mr={self._debug_motion_ratio:.2f}")
+                  f" ign={self._debug_ignore} mr={self._debug_motion_ratio:.2f}")
             self._last_action_time = now_ms
             self._last_action = "duck"
             self._key_held = True
@@ -173,7 +177,7 @@ class ChromeDinoPlugin(GamePlugin):
         elif state["jump"]:
             # Jump zone: cactus or low pterodactyl
             print(f"  >> JUMP jmp={self._debug_lower} dck={self._debug_upper}"
-                  f" mr={self._debug_motion_ratio:.2f}")
+                  f" ign={self._debug_ignore} mr={self._debug_motion_ratio:.2f}")
             self._last_action_time = now_ms
             self._last_action = "jump"
             self._key_held = True

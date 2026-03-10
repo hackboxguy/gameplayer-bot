@@ -390,8 +390,13 @@ Full frame (640x480) → Crop to game ROI → CV processing → Action
 ```
 
 The game ROI (Region of Interest) is a small rectangle containing just the
-game area. It can be auto-detected via `--auto-roi` or manually configured
-in `configs/game.ini`.
+game area. Three detection modes:
+- `--guided-roi`: User places a white Notepad window sized to match the game
+  baseline. Camera detects the white rectangle, uses its top edge as ground
+  line and width as game width. Most reliable method.
+- `--auto-roi`: Automatically finds game area via uniformity mask + ground
+  line detection. Works across different camera placements.
+- Manual config: Edit `configs/game.ini` [roi] section directly.
 
 ## Game Plugin Architecture
 
@@ -450,27 +455,32 @@ class ChromeDinoPlugin(GamePlugin):
         self._prev_gray = gray.copy()
         _, motion = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
 
-        # Scan strip ahead of dino (28-38% of ROI width)
-        # Three vertical zones:
-        #   0-35%:  ignore (stars, moon, high ptero)
-        #   35-55%: duck zone (medium ptero at face level)
-        #   55-100%: jump zone (cactus, low ptero)
-        x_start, x_end = int(w * 0.28), int(w * 0.38)
-        y_ign, y_duck_end = int(h * 0.35), int(h * 0.55)
+        # Two scan strips ahead of dino (at ~10-15%):
+        #   Jump strip: 27-33% — narrow/close for well-timed cactus jumps
+        #   Duck strip: 20-34% — wider to catch fast pterodactyls
+        # Bottom 40% (y>=60%) for ground obstacles, top 60% for pteros.
+        jx_start, jx_end = int(w * 0.27), int(w * 0.33)
+        dx_start, dx_end = int(w * 0.20), int(w * 0.34)
+        y_ground = int(h * 0.60)
 
         # Scene change detection (game-over/restart)
         if np.sum(motion > 0) / (h * w) > 0.15:
             return {"jump": False, "duck": False, ...}
 
-        duck_zone = motion[y_ign:y_duck_end, x_start:x_end]
-        jump_zone = motion[y_duck_end:, x_start:x_end]
-        return {
-            "jump": np.sum(jump_zone > 0) > TRIGGER_THRESHOLD,
-            "duck": np.sum(duck_zone > 0) > TRIGGER_THRESHOLD, ...
-        }
+        scan = motion[y_ground:, jx_start:jx_end]    # ground level
+        upper = motion[:y_ground, dx_start:dx_end]    # above ground
+        scan_sum = np.sum(scan > 0)
+        upper_sum = np.sum(upper > 0)
+
+        jump = scan_sum > TRIGGER_THRESHOLD
+        duck = False
+        # Upper-only motion = pterodactyl (cactuses always have ground motion)
+        if upper_sum > TRIGGER_THRESHOLD and not jump:
+            duck = True
+        return {"jump": jump, "duck": duck, ...}
 
     def decide(self, state):
-        # Duck takes priority (medium ptero can't be jumped over)
+        # Duck takes priority (face-level ptero can't be jumped over)
         if state["duck"]:
             return {"action": "duck"}
         elif state["jump"]:
@@ -542,9 +552,9 @@ y2 = 210
 [chrome-dino]
 # Pixel sum threshold to consider an obstacle detected in a zone
 # Scale this up if the ROI is larger (more pixels in scan zone)
-trigger_threshold = 500
+trigger_threshold = 300
 # Cooldown between actions (ms)
-cooldown_ms = 500
+cooldown_ms = 350
 
 [breakout]
 # Ball color range in HSV (tune for your specific game)
@@ -600,7 +610,8 @@ gameplayer-bot/
 - Manual ROI config via `configs/game.ini`
 - Chrome Dino plugin: frame differencing obstacle detection
 - Jump/duck via keyboard HID
-- **Result**: Scores 470-580 consistently at 15fps with USB camera (Brio).
+- CSI camera support (ov5647) — 32fps, ~2x faster than USB camera
+- **Result**: Scores 400–619 with CSI camera at 32fps.
   See "Current Status" section below for details.
 
 ### Phase 3: Breakout/Pong (Mouse Game)
@@ -632,6 +643,16 @@ gameplayer-bot/
 | USB poll interval (1ms for HID) | 0-1ms | 22-25ms |
 | **Total pipeline latency** | **~22-25ms** | |
 
+### Actual (CSI Camera — ov5647 at 32fps)
+
+| Stage | Duration | Cumulative |
+|---|---|---|
+| Frame capture (32fps CSI via picamera2) | 31ms | 31ms |
+| ROI crop | <1ms | 32ms |
+| GaussianBlur + absdiff + threshold | ~2ms | 34ms |
+| Decision + HID write | <1ms | 35ms |
+| **Total pipeline latency** | **~31-35ms** | |
+
 ### Actual (USB Camera — Logitech Brio at 15fps)
 
 | Stage | Duration | Cumulative |
@@ -642,38 +663,47 @@ gameplayer-bot/
 | Decision + HID write | <1ms | 71ms |
 | **Total pipeline latency** | **~67-71ms** | |
 
-The USB camera's 15fps is the bottleneck. At 67ms between frames, the
-timing margin for jumping is tight at higher game speeds. This limits the
-Chrome Dino score to ~500 before timing failures become frequent.
-
-A CSI camera at 30-60fps would reduce frame capture to 16-33ms, roughly
-halving total latency and enabling higher scores.
+The CSI camera's 32fps (~31ms per frame) roughly halves the pipeline latency
+compared to the USB camera (15fps, ~67ms). This enables scores of 400-619
+with the Chrome Dino plugin.
 
 For mouse-based games (Breakout/Pong), continuous tracking means individual
-frame latency matters less — small dx corrections every 67ms should still
-produce adequate paddle movement.
+frame latency matters less — small dx corrections every 31ms should produce
+smooth paddle movement.
 
 ## Current Status & Results (March 2025)
 
 ### Chrome Dino — Working
 
-The bot reliably plays Chrome Dino in both day and night modes, consistently
-scoring **400–500** before failing. Key improvements in this iteration:
+The bot reliably plays Chrome Dino in both day and night modes, scoring
+**400–619** with CSI camera at 32fps. Key improvements:
 
+- **CSI camera** (ov5647): 32fps vs USB camera's 15fps. Halved pipeline
+  latency enables higher scores and better reaction time.
+- **Guided ROI detection** (`--guided-roi`): User places a white Notepad
+  window sized to match the game baseline. Camera detects the white
+  rectangle and calculates ROI from game proportions. Most reliable method.
 - **Auto-ROI detection** (`--auto-roi`): Automatically finds the game area
   by detecting the ground line using uniformity mask + Canny/Hough within
   the uniform region. Robust across different camera placements.
-- **Three-zone detection**: Ignore zone (stars/moon/high ptero), duck zone
-  (medium pterodactyl at face level), jump zone (cactus/low ptero).
-  Duck takes priority over jump.
+- **Dual-strip detection**: Narrow jump strip (27-33%) for well-timed
+  cactus jumps. Wider duck strip (20-34%) to catch fast pterodactyls.
+  Ground level (y>=60%) for cactuses, upper zone for pterodactyls.
+- **Pterodactyl handling**: Upper-only motion (no ground motion) triggers
+  duck. Ground motion triggers jump. Cactuses always have ground motion;
+  pterodactyls float above.
 - **Scene change suppression**: Prevents false triggers during game-over
   and restart transitions (>15% of ROI pixels changed = scene change).
 
 Main failure modes at higher scores:
-- **Late jumps** (~500+ score): Game speed outpaces the 67ms frame interval.
-  The scan strip detects the obstacle but the jump arrives too late.
-- **Early jumps on wide obstacles**: Four-cactus clusters enter the scan
-  zone earlier due to their width, causing premature jumps at low speed.
+- **Fixed scan position**: The jump strip is at a fixed x position. At low
+  speeds, this gives plenty of lead time (sometimes too much — early jumps).
+  At high speeds (>300 score), obstacles arrive faster and the fixed strip
+  doesn't provide enough lead time. Adaptive speed-based scan positioning
+  is the planned fix (see "High Priority" below).
+- **Pterodactyl at boundary heights**: Pterodactyls flying at exactly the
+  60% y-boundary can split motion between upper and ground zones, causing
+  inconsistent duck/jump decisions.
 
 ### Detection Algorithm Evolution
 
@@ -701,25 +731,35 @@ sidesteps all these issues.
 
 | Parameter | Value | Why |
 |---|---|---|
-| Scan strip position | 28–38% of ROI width | Balanced timing for both slow and fast game speeds |
+| Jump strip position | 27–33% of ROI width | Narrow strip close to dino for well-timed cactus jumps |
+| Duck strip position | 20–34% of ROI width | Wider strip to catch fast pterodactyls at high speed |
+| Ground split | 60% of ROI height | Above: pterodactyl territory. Below: cactus territory |
 | Diff threshold | 30 brightness levels | Filters camera noise while catching obstacles |
-| Trigger threshold | 500 pixel count | Scaled for auto-detected ROI size (~530x197). Above noise, below smallest cactus |
-| Cooldown | 500ms | Prevents re-triggering on same obstacle as it scrolls through |
-| Ignore zone | 0–35% of ROI height | Filters stars, moon, and high pterodactyls (safe to run under) |
-| Duck zone | 35–55% of ROI height | Medium pterodactyl at face level → duck |
-| Jump zone | 55–100% of ROI height | Cactus / low pterodactyl → jump |
+| Trigger threshold | 300 pixel count | Scaled for current scan zone size |
+| Cooldown | 350ms | Allows consecutive jumps for closely-spaced cactuses at high speed |
 | Scene change threshold | 15% of ROI pixels | Suppresses triggers during game-over/restart transitions |
 
 ### Hardware Performance
 
-- **Camera**: Logitech Brio USB webcam — stuck at 15fps regardless of resolution
-- **Resolution**: 640×480 (320×240 tested but no fps improvement, worse detection)
-- **Pipeline latency**: ~67–71ms total (dominated by frame capture interval)
-- **CV processing**: ~2ms (GaussianBlur + absdiff + threshold on 390×80 ROI)
+- **CSI Camera**: RPi Camera Module v1 (ov5647) — 32fps at 640×480
+- **USB Camera**: Logitech Brio — 15fps (backup, used for initial development)
+- **Resolution**: 640×480
+- **Pipeline latency (CSI)**: ~33ms total (31ms capture + ~2ms CV)
+- **Pipeline latency (USB)**: ~67–71ms total (dominated by frame capture interval)
+- **CV processing**: ~2ms (GaussianBlur + absdiff + threshold on ~390×80 ROI)
 
 ## What to Explore Next
 
 ### Completed
+
+- **CSI camera support** — RPi Camera Module v1 (ov5647) achieving 32fps
+  via picamera2/libcamera. 2x faster than USB camera (15fps), enabling
+  higher scores (400-619 vs 400-500 with USB).
+
+- **Guided ROI detection** — `--guided-roi` uses a white Notepad window
+  as a visual reference. User sizes the Notepad to match the game baseline.
+  Camera detects the bright white rectangle and uses game-proportion ratios
+  to calculate the ROI. Most reliable ROI detection method.
 
 - **Auto-ROI detection** — `--auto-roi` automatically detects the game area.
   Uses uniformity mask to find the browser dark area, then Canny + Hough
@@ -727,23 +767,21 @@ sidesteps all these issues.
   ground line extent, and fixed game-proportion ratios build the ROI.
   Robust across different camera placements (tested with 8+ positions).
 
-- **Three-zone obstacle detection** — Replaced two-zone (upper/lower) with
-  three zones: ignore (0-35%), duck (35-55%), jump (55-100%). Fixes missed
-  ducks on medium-height pterodactyls and filters stars/moon false triggers.
+- **Dual-strip obstacle detection** — Narrow jump strip (27-33%) for
+  well-timed cactus jumps. Wider duck strip (20-34%) for fast pterodactyls.
+  Ground level split at 60%: below = cactus (jump), above = pterodactyl
+  (duck if upper-only, jump if ground-only).
 
 - **Scene change detection** — Suppresses all triggers when >15% of ROI
   pixels change between frames (game-over/restart transitions).
 
 ### High Priority
 
-1. **CSI camera module** — Should deliver 30–60fps, cutting pipeline latency
-   to 16–33ms. This is the single biggest improvement for higher scores.
-   The `camera.py` already supports CSI via picamera2.
-
-2. **Adaptive scan strip** — Move the scan strip position based on game speed.
-   At low speeds, scan further ahead (more reaction time). At high speeds,
-   scan closer (less time for false positives to recover). Could use score
-   display OCR or obstacle spacing timing to estimate speed.
+1. **Adaptive scan strip (speed-based)** — Use `cv2.phaseCorrelate` on the
+   ground texture between consecutive frames to measure horizontal scroll
+   speed in pixels/frame. Shift the jump strip further ahead at higher
+   speeds (more lead time), closer at low speeds (less early jumping).
+   Self-correcting on game restart (speed drops to 0).
 
 ### Medium Priority
 

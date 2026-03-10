@@ -11,6 +11,7 @@ Usage:
     python3 src/main.py --test-hid      # Send test keystrokes (no camera)
     python3 src/main.py --calibrate     # Capture and save a frame for ROI setup
     python3 src/main.py --auto-roi      # Auto-detect Chrome Dino game area
+    python3 src/main.py --guided-roi    # Detect ROI using white Notepad as guide
 """
 
 import argparse
@@ -337,6 +338,135 @@ def auto_roi(cfg):
     print(f"  Run 'sudo python3 src/main.py' to start playing")
 
 
+def guided_roi(cfg):
+    """Guided ROI detection using a white Notepad window as reference.
+
+    The user places a Notepad window (white background) sized to match
+    the game's baseline width. The camera detects this bright white
+    rectangle and uses it to calculate the game ROI.
+
+    Steps:
+    1. User opens Notepad, resizes it to match the game's ground line width
+    2. User runs: sudo python3 src/main.py --guided-roi
+    3. Camera detects the white rectangle
+    4. Top edge of rectangle = ground line y, width = game width
+    5. ROI is calculated from game proportions
+    """
+    import cv2
+    import numpy as np
+    from camera import create_camera
+
+    print("gameplayer-bot: guided ROI detection")
+    print("Make sure a white Notepad window is visible, sized to the game baseline.")
+    print(f"Camera: {cfg.camera_type} {cfg.camera_width}x{cfg.camera_height}")
+
+    cam = create_camera(cfg.camera_type, cfg.camera_width, cfg.camera_height,
+                         cfg.camera_fps, cfg.camera_device)
+    cam.start()
+    print("Waiting for camera to stabilize...")
+    time.sleep(2)
+    for _ in range(10):
+        frame = cam.capture()
+    cam.stop()
+
+    outdir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "tests", "sample_frames"
+    )
+    os.makedirs(outdir, exist_ok=True)
+
+    frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+    cv2.imwrite(os.path.join(outdir, "guided_roi_input.png"), frame_bgr)
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+    h, w = gray.shape
+
+    # Step 1: Threshold for bright white pixels (Notepad background).
+    # White paper/notepad has brightness > 200 in camera image.
+    _, white_mask = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+
+    # Clean up noise with morphological open/close
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_OPEN, kernel)
+    white_mask = cv2.morphologyEx(white_mask, cv2.MORPH_CLOSE, kernel)
+
+    cv2.imwrite(os.path.join(outdir, "guided_roi_mask.png"), white_mask)
+
+    # Step 2: Find contours — the largest white rectangle is the Notepad
+    contours, _ = cv2.findContours(white_mask, cv2.RETR_EXTERNAL,
+                                    cv2.CHAIN_APPROX_SIMPLE)
+
+    if not contours:
+        print("ERROR: No white rectangle found. Is Notepad visible?")
+        print(f"  Input: {os.path.join(outdir, 'guided_roi_input.png')}")
+        print(f"  Mask: {os.path.join(outdir, 'guided_roi_mask.png')}")
+        return
+
+    # Find the largest rectangle-like contour
+    best = None
+    best_area = 0
+    for c in contours:
+        rx, ry, rw, rh = cv2.boundingRect(c)
+        area = rw * rh
+        aspect = rw / max(rh, 1)
+        # Must be wider than tall, reasonably sized
+        if rw < 60 or rh < 20 or aspect < 1.5:
+            continue
+        print(f"    white region: x={rx} y={ry} w={rw} h={rh}"
+              f" aspect={aspect:.1f} area={area}")
+        if area > best_area:
+            best_area = area
+            best = (rx, ry, rw, rh)
+
+    if best is None:
+        print("ERROR: No suitable white rectangle found.")
+        print(f"  Input: {os.path.join(outdir, 'guided_roi_input.png')}")
+        print(f"  Mask: {os.path.join(outdir, 'guided_roi_mask.png')}")
+        return
+
+    rx, ry, rw, rh = best
+    print(f"  Notepad detected: x={rx} y={ry} w={rw} h={rh}")
+
+    # Step 3: The Notepad's top edge = game ground line y position.
+    # The Notepad's width = game baseline width.
+    ground_y = ry           # top edge of Notepad = ground line
+    ground_x1 = rx          # left edge
+    ground_x2 = rx + rw     # right edge
+    line_width = rw
+
+    print(f"  Ground line: y={ground_y} x={ground_x1}..{ground_x2}"
+          f" width={line_width}")
+
+    # Step 4: Build ROI from game proportions (same as auto_roi).
+    game_height = int(line_width * 0.40)
+    pad_below = 15
+    pad_left = int(line_width * 0.12)
+    pad_right = int(line_width * 0.05)
+
+    roi_x1 = max(0, ground_x1 - pad_left)
+    roi_y1 = max(0, ground_y - game_height)
+    roi_x2 = min(w, ground_x2 + pad_right)
+    roi_y2 = min(h, ground_y + pad_below)
+
+    # Draw debug image
+    debug = frame_bgr.copy()
+    # Green: detected Notepad
+    cv2.rectangle(debug, (rx, ry), (rx + rw, ry + rh), (0, 255, 0), 2)
+    # Blue: calculated ROI
+    cv2.rectangle(debug, (roi_x1, roi_y1), (roi_x2, roi_y2), (255, 0, 0), 2)
+    # Red line: ground line
+    cv2.line(debug, (ground_x1, ground_y), (ground_x2, ground_y), (0, 0, 255), 2)
+    cv2.imwrite(os.path.join(outdir, "guided_roi_debug.png"), debug)
+
+    print(f"  ROI detected: x1={roi_x1} y1={roi_y1} x2={roi_x2} y2={roi_y2}")
+    print(f"  ROI size: {roi_x2 - roi_x1}x{roi_y2 - roi_y1}")
+    print(f"  Debug image: {os.path.join(outdir, 'guided_roi_debug.png')}")
+
+    cfg.set_roi(roi_x1, roi_y1, roi_x2, roi_y2)
+    print(f"  Updated configs/game.ini with new ROI")
+    print(f"  Now close Notepad, start the game, and run: sudo python3 src/main.py")
+
+
 def run(cfg):
     """Main game loop."""
     from camera import create_camera
@@ -408,15 +538,18 @@ def run(cfg):
                     pk_lo = getattr(plugin, '_peak_lower', 0)
                     pk_up = getattr(plugin, '_peak_upper', 0)
                     pk_mr = getattr(plugin, '_peak_mr', 0)
+                    pk_ign = getattr(plugin, '_peak_ignore', 0)
                     dbg = (f" lo={plugin._debug_lower}"
                            f" up={plugin._debug_upper}"
-                           f" pk_lo={pk_lo} pk_up={pk_up}"
+                           f" ign={getattr(plugin, '_debug_ignore', 0)}"
+                           f" pk_lo={pk_lo} pk_up={pk_up} pk_ign={pk_ign}"
                            f" bg={state.get('bg_brightness', 0):.0f}"
                            f" pk_mr={pk_mr:.2f}{'!SC' if sc else ''}")
                     # Reset peaks for next interval
                     plugin._peak_lower = 0
                     plugin._peak_upper = 0
                     plugin._peak_mr = 0.0
+                    plugin._peak_ignore = 0
                 print(f"  fps={fps:.1f} action={action.get('action', '?')}"
                       f" night={state.get('is_night', '?')}{dbg}")
                 frame_count = 0
@@ -445,6 +578,8 @@ def main():
                         help="Override camera type from config")
     parser.add_argument("--auto-roi", action="store_true",
                         help="Auto-detect Chrome Dino game area (ground line)")
+    parser.add_argument("--guided-roi", action="store_true",
+                        help="Detect ROI using a white Notepad window as guide")
     args = parser.parse_args()
 
     if args.test_hid:
@@ -457,6 +592,10 @@ def main():
 
     if args.auto_roi:
         auto_roi(cfg)
+        return
+
+    if args.guided_roi:
+        guided_roi(cfg)
         return
 
     if args.calibrate:
