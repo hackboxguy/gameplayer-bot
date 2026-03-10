@@ -400,7 +400,7 @@ def guided_roi(cfg):
         print("ERROR: No white rectangle found. Is Notepad visible?")
         print(f"  Input: {os.path.join(outdir, 'guided_roi_input.png')}")
         print(f"  Mask: {os.path.join(outdir, 'guided_roi_mask.png')}")
-        return
+        return False
 
     # Find the largest rectangle-like contour
     best = None
@@ -422,7 +422,7 @@ def guided_roi(cfg):
         print("ERROR: No suitable white rectangle found.")
         print(f"  Input: {os.path.join(outdir, 'guided_roi_input.png')}")
         print(f"  Mask: {os.path.join(outdir, 'guided_roi_mask.png')}")
-        return
+        return False
 
     rx, ry, rw, rh = best
     print(f"  Notepad detected: x={rx} y={ry} w={rw} h={rh}")
@@ -465,6 +465,7 @@ def guided_roi(cfg):
     cfg.set_roi(roi_x1, roi_y1, roi_x2, roi_y2)
     print(f"  Updated configs/game.ini with new ROI")
     print(f"  Now close Notepad, start the game, and run: sudo python3 src/main.py")
+    return True
 
 
 def run(cfg):
@@ -571,6 +572,48 @@ def run(cfg):
         cam.stop()
 
 
+def boot(cfg, delay):
+    """Boot mode: wait for camera, run guided-roi with retries, then game loop.
+
+    Designed for headless autostart on boot. The user places a Notepad window
+    before powering on the Pi. After boot + delay, the Pi detects the Notepad,
+    calibrates ROI, and enters the game loop.
+
+    Retry logic: attempts guided-roi every 10 seconds for up to 2 minutes.
+    This handles cases where the camera needs extra time to stabilize or the
+    Notepad isn't perfectly positioned on the first try.
+    """
+    print(f"gameplayer-bot: boot mode (delay={delay}s)")
+    print(f"Camera: {cfg.camera_type} {cfg.camera_width}x{cfg.camera_height}")
+
+    if delay > 0:
+        print(f"Waiting {delay}s for camera and display to stabilize...")
+        time.sleep(delay)
+
+    # Retry guided-roi up to 12 times (every 10s = 2 minutes total)
+    MAX_RETRIES = 12
+    RETRY_INTERVAL = 10
+    success = False
+    for attempt in range(1, MAX_RETRIES + 1):
+        print(f"\n--- Guided ROI attempt {attempt}/{MAX_RETRIES} ---")
+        result = guided_roi(cfg)
+        if result:
+            success = True
+            break
+        if attempt < MAX_RETRIES:
+            print(f"  Retrying in {RETRY_INTERVAL}s...")
+            time.sleep(RETRY_INTERVAL)
+
+    if not success:
+        print("ERROR: guided-roi failed after all retries. Check camera and Notepad position.")
+        print("  Falling back to config ROI and starting game loop anyway.")
+
+    # Enter game loop
+    print("\ngameplayer-bot: starting game loop")
+    print("  Remove Notepad from screen, then press spacebar to start the game.")
+    run(cfg)
+
+
 def main():
     parser = argparse.ArgumentParser(description="gameplayer-bot")
     parser.add_argument("--config", default=None,
@@ -585,6 +628,10 @@ def main():
                         help="Auto-detect Chrome Dino game area (ground line)")
     parser.add_argument("--guided-roi", action="store_true",
                         help="Detect ROI using a white Notepad window as guide")
+    parser.add_argument("--boot", action="store_true",
+                        help="Boot mode: guided-roi with retries, then game loop")
+    parser.add_argument("--boot-delay", type=int, default=10,
+                        help="Seconds to wait before starting in boot mode (default: 10)")
     args = parser.parse_args()
 
     if args.test_hid:
@@ -594,6 +641,10 @@ def main():
     cfg = Config(args.config)
     if args.camera:
         cfg.camera_type = args.camera
+
+    if args.boot:
+        boot(cfg, args.boot_delay)
+        return
 
     if args.auto_roi:
         auto_roi(cfg)

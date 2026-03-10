@@ -6,10 +6,10 @@ Requires=gameplayer-bot-gadget.service
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/bin/python3 /home/pi/gameplayer-bot/src/main.py
+ExecStart=/usr/bin/python3 /home/pi/gameplayer-bot/src/main.py --boot --camera csi
 WorkingDirectory=/home/pi/gameplayer-bot
 Restart=on-failure
-RestartSec=5
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
