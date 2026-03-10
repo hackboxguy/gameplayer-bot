@@ -632,6 +632,8 @@ def main():
                         help="Boot mode: guided-roi with retries, then game loop")
     parser.add_argument("--boot-delay", type=int, default=10,
                         help="Seconds to wait before starting in boot mode (default: 10)")
+    parser.add_argument("--autoloop", action="store_true",
+                        help="Enable game pause/over detection with auto speed reset")
     args = parser.parse_args()
 
     if args.test_hid:
@@ -641,6 +643,9 @@ def main():
     cfg = Config(args.config)
     if args.camera:
         cfg.camera_type = args.camera
+
+    if args.autoloop:
+        cfg.autoloop = True
 
     if args.boot:
         boot(cfg, args.boot_delay)

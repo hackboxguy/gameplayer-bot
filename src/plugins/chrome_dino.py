@@ -73,6 +73,7 @@ class ChromeDinoPlugin(GamePlugin):
         self._cooldown_ms = config.getint(
             "chrome-dino", "cooldown_ms", fallback=300
         )
+        self._autoloop = getattr(config, 'autoloop', False)
 
     def calibrate(self, frame):
         os.makedirs(DEBUG_DIR, exist_ok=True)
@@ -130,24 +131,24 @@ class ChromeDinoPlugin(GamePlugin):
                 self._speed = 0.7 * self._speed + 0.3 * raw_speed
             # else: keep current speed — it never drops mid-game
 
-            # Game pause/over detection: track consecutive near-zero speed frames.
-            # Only activate after speed ratchet proves a game was running
-            # (speed >= SPEED_MIN). Avoids false pause at startup when
-            # phase correlation gives low values (~0.2 px/frame).
-            ZERO_SPEED_THRESH = 0.3   # px/frame — below this = no scroll
-            PAUSE_FRAMES = 60         # ~2s at 30fps (game-over screen lasts many seconds)
-            if self._speed >= self.SPEED_MIN and raw_speed < ZERO_SPEED_THRESH:
-                self._zero_speed_frames += 1
-                if self._zero_speed_frames >= PAUSE_FRAMES and not self._game_paused:
-                    self._game_paused = True
-                    self._speed = 0.0
-                    self._ptero_suspect = 0
-                    print("  >> GAME PAUSED/OVER detected — speed reset")
-            else:
-                if self._game_paused:
-                    self._game_paused = False
-                    print("  >> GAME RESUMED — starting fresh")
-                self._zero_speed_frames = 0
+            # Game pause/over detection (--autoloop only): track consecutive
+            # near-zero speed frames. Only activate after speed ratchet proves
+            # a game was running (speed >= SPEED_MIN).
+            if self._autoloop:
+                ZERO_SPEED_THRESH = 0.3   # px/frame — below this = no scroll
+                PAUSE_FRAMES = 60         # ~2s at 30fps
+                if self._speed >= self.SPEED_MIN and raw_speed < ZERO_SPEED_THRESH:
+                    self._zero_speed_frames += 1
+                    if self._zero_speed_frames >= PAUSE_FRAMES and not self._game_paused:
+                        self._game_paused = True
+                        self._speed = 0.0
+                        self._ptero_suspect = 0
+                        print("  >> GAME PAUSED/OVER detected — speed reset")
+                else:
+                    if self._game_paused:
+                        self._game_paused = False
+                        print("  >> GAME RESUMED — starting fresh")
+                    self._zero_speed_frames = 0
         self._prev_ground = ground_strip.copy()
 
         # Threshold the difference to find significant motion
@@ -205,11 +206,13 @@ class ChromeDinoPlugin(GamePlugin):
         PTERO_EARLY_CENTROID = 0.70  # below cactus range (81-87%)
 
         # Suppress triggers during scene changes or game paused/over.
-        # Speed ratchet reset is now handled by pause detection (60 frames
-        # of zero scroll), not scene_change (which also fires on day/night).
         if scene_change or self._game_paused:
             if scene_change:
                 self._ptero_suspect = 0
+                # Without --autoloop, reset speed on scene change (original behavior).
+                # With --autoloop, pause detection handles the reset instead.
+                if not self._autoloop:
+                    self._speed = 0.0
             duck_triggered = False
             jump_triggered = False
         else:
