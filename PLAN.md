@@ -421,7 +421,16 @@ class GamePlugin:
         raise NotImplementedError
 ```
 
-### Plugin: Chrome Dino
+### Plugin: Chrome Dino (Implemented)
+
+Uses **frame differencing** instead of static thresholding. This was a key
+lesson learned — static thresholding on camera images is unreliable because:
+- Ground line, score text, and dino body are always bright in night mode
+- Camera noise and auto-exposure changes cause false triggers
+- Otsu's method is unstable on unimodal (obstacle-free) frames
+
+Frame differencing (`cv2.absdiff(current, previous)`) naturally cancels all
+static elements. Only moving objects (scrolling obstacles) produce signal.
 
 ```python
 class ChromeDinoPlugin(GamePlugin):
@@ -429,43 +438,38 @@ class ChromeDinoPlugin(GamePlugin):
     hid_type = "keyboard"
 
     def detect(self, frame):
-        roi = frame[y1:y2, x1:x2]
-        gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)  # kill camera noise
 
-        # Detect day vs night mode from background brightness
-        bg_brightness = np.mean(gray[:20, :20])
+        # Day/night detection from background brightness
+        bg_brightness = np.mean(gray[:15, :15])
         is_night = bg_brightness < 128
 
-        # Threshold (flip for night mode)
-        if is_night:
-            _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
-        else:
-            _, binary = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)
+        # Frame differencing: only moving objects produce signal
+        diff = cv2.absdiff(gray, self._prev_gray)
+        self._prev_gray = gray.copy()
+        _, motion = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
 
-        # Split into lower zone (cactus) and upper zone (bird)
-        h = binary.shape[0]
-        lower_zone = binary[h//2:, :]
-        upper_zone = binary[:h//2, :]
+        # Narrow scan strip ahead of dino (40-55% of ROI width)
+        # Narrow strip = obstacle passes quickly = one trigger per obstacle
+        x_start = int(w * 0.40)
+        x_end = int(w * 0.55)
+        lower_zone = motion[h//2:, x_start:x_end]
+        upper_zone = motion[:h//2, x_start:x_end]
 
-        lower_triggered = np.sum(lower_zone) > TRIGGER_THRESHOLD
-        upper_triggered = np.sum(upper_zone) > TRIGGER_THRESHOLD
-
-        return {"lower": lower_triggered, "upper": upper_triggered,
-                "is_night": is_night}
+        lower_triggered = np.sum(lower_zone > 0) > TRIGGER_THRESHOLD
+        upper_triggered = np.sum(upper_zone > 0) > TRIGGER_THRESHOLD
+        return {"lower": lower_triggered, "upper": upper_triggered, ...}
 
     def decide(self, state):
-        if state["upper"] and not state["lower"]:
-            return {"action": "duck"}
-        elif state["lower"]:
+        # Lower zone: cactus or low bird -> jump
+        if state["lower"]:
             return {"action": "jump"}
+        # Upper zone: mid/high bird -> duck (with 800ms post-jump guard
+        # to avoid false triggers from dino's own jump motion)
+        elif state["upper"] and time_since_jump > 800:
+            return {"action": "duck"}
         return {"action": "none"}
-
-    def get_hid_report(self, action):
-        if action["action"] == "jump":
-            return keyboard_report(key=0x2C)   # spacebar
-        elif action["action"] == "duck":
-            return keyboard_report(key=0x51)   # down arrow
-        return keyboard_report(key=0x00)       # release
 ```
 
 ### Plugin: Breakout / Pong (Paddle Game)
@@ -506,28 +510,37 @@ class BreakoutPlugin(GamePlugin):
 
 ```ini
 [general]
-# Which game plugin to load
+# Which game plugin to load: chrome-dino, breakout
 plugin = chrome-dino
 
-# Camera resolution
+# Camera type: auto, csi, usb, dummy
+camera_type = auto
+
+# USB camera device index (only used when camera_type=usb or auto fallback)
+camera_device = 0
+
+# Camera resolution and framerate
 camera_width = 640
 camera_height = 480
-camera_fps = 60
+camera_fps = 30
 
 [roi]
 # Game area coordinates in camera frame (pixels)
-# Set these after mounting the camera and aiming at the monitor
-x1 = 100
-y1 = 50
-x2 = 540
-y2 = 400
+# Set these after mounting the camera and aiming at the monitor.
+# Use: python3 src/main.py --calibrate to capture a frame and check coords.
+x1 = 140
+y1 = 130
+x2 = 530
+y2 = 210
 
 [chrome-dino]
-# Trigger threshold for obstacle detection (pixel sum)
-trigger_threshold = 5000
+# Pixel sum threshold to consider an obstacle detected in a zone
+trigger_threshold = 150
+# Cooldown between actions (ms)
+cooldown_ms = 500
 
 [breakout]
-# Ball color range in HSV
+# Ball color range in HSV (tune for your specific game)
 ball_h_min = 0
 ball_h_max = 180
 ball_s_min = 50
@@ -567,20 +580,21 @@ gameplayer-bot/
 
 ## Development Phases
 
-### Phase 1: USB HID Gadget Foundation
+### Phase 1: USB HID Gadget Foundation — COMPLETE
 - Flash Bookworm Lite (hostname: gameplayer-bot, user: pi)
 - Write `setup.sh` and gadget config scripts
 - Write Python HID helpers (`src/hid.py`)
 - Test: Pi 4 sends spacebar presses to host PC via USB-C gadget
 - Deliverable: `sudo systemctl start gameplayer-bot` sends test keystrokes
+- **Result**: Working. Host PC (Ubuntu) sees keyboard + mouse via `evtest`.
 
-### Phase 2: Camera + Chrome Dino (Keyboard Game)
-- Camera capture with picamera2 (`src/camera.py`)
+### Phase 2: Camera + Chrome Dino (Keyboard Game) — COMPLETE
+- Camera capture with auto-detection (`src/camera.py`)
 - Manual ROI config via `configs/game.ini`
-- Chrome Dino plugin: obstacle detection with day/night handling
+- Chrome Dino plugin: frame differencing obstacle detection
 - Jump/duck via keyboard HID
-- Test: Plays Chrome Dino, survives day/night transitions
-- Deliverable: Camera-based Chrome Dino player, no LDR sensors
+- **Result**: Scores 470-580 consistently at 15fps with USB camera (Brio).
+  See "Current Status" section below for details.
 
 ### Phase 3: Breakout/Pong (Mouse Game)
 - Ball tracking (color or contour-based)
@@ -593,26 +607,138 @@ gameplayer-bot/
 - `--autostart` tested and documented
 - Game selection via `configs/game.ini`
 - Performance optimization (reduce CPU usage, lower power)
+- Pi Zero 2W testing (single cable mode)
+- CSI camera module testing (should give higher fps than USB)
 - Documentation and blog post
 
 ## Latency Analysis
+
+### Theoretical (CSI Camera at 60fps)
 
 | Stage | Duration | Cumulative |
 |---|---|---|
 | Frame capture (60fps) | 16ms | 16ms |
 | ROI crop + resize | <1ms | 17ms |
-| CV processing (threshold + contour) | 3-5ms | 20-22ms |
+| CV processing (blur + diff + threshold) | 3-5ms | 20-22ms |
 | Decision logic | <1ms | 21-23ms |
 | HID report write | <1ms | 22-24ms |
 | USB poll interval (1ms for HID) | 0-1ms | 22-25ms |
 | **Total pipeline latency** | **~22-25ms** | |
 
-Chrome Dino at max speed needs ~100-150ms reaction time, so we have
-~75-125ms of margin. Comfortable even accounting for jitter.
+### Actual (USB Camera — Logitech Brio at 15fps)
+
+| Stage | Duration | Cumulative |
+|---|---|---|
+| Frame capture (15fps Brio via V4L2) | 67ms | 67ms |
+| ROI crop | <1ms | 68ms |
+| GaussianBlur + absdiff + threshold | ~2ms | 70ms |
+| Decision + HID write | <1ms | 71ms |
+| **Total pipeline latency** | **~67-71ms** | |
+
+The USB camera's 15fps is the bottleneck. At 67ms between frames, the
+timing margin for jumping is tight at higher game speeds. This limits the
+Chrome Dino score to ~500 before timing failures become frequent.
+
+A CSI camera at 30-60fps would reduce frame capture to 16-33ms, roughly
+halving total latency and enabling higher scores.
 
 For mouse-based games (Breakout/Pong), continuous tracking means individual
-frame latency matters less — small dx corrections every 16ms produce smooth
-paddle movement.
+frame latency matters less — small dx corrections every 67ms should still
+produce adequate paddle movement.
+
+## Current Status & Results (March 2025)
+
+### Chrome Dino — Working
+
+The bot reliably plays Chrome Dino in both day and night modes, consistently
+scoring **470–580** before failing. The main failure modes at higher scores:
+
+- **Late jumps** (~500+ score): Game speed outpaces the 67ms frame interval.
+  The scan strip detects the obstacle but the jump arrives too late.
+- **Pterodactyl ducking**: Mid-level pterodactyls require ducking. The upper
+  zone detection works but is less reliable — stars/moon in night mode and
+  the dino's own jump arc create false motion that must be filtered out.
+
+### Detection Algorithm Evolution
+
+Finding the right detection approach required 6+ iterations:
+
+1. **Simple threshold** (bg+40): Failed — ground line, dino body, score text
+   are all bright in night mode → constant false triggers
+2. **Baseline subtraction**: Failed — camera auto-exposure hadn't stabilized
+   when baseline was captured (bg=3 at startup vs bg=51 during play)
+3. **Detection column**: Failed — ground texture produced 5000+ pixel noise
+   even with margins excluded
+4. **Otsu's threshold**: Failed — unstable on obstacle-free frames (unimodal
+   histogram → random low threshold → noise spikes)
+5. **Fixed high threshold (3000)**: Inverted behavior — Otsu gave lower
+   thresholds when obstacles created bimodal histogram
+6. **Frame differencing** (final): Works. `cv2.absdiff(current, previous)`
+   cancels all static elements. Only scrolling obstacles produce signal.
+
+Key insight: a camera watching a screen is fundamentally different from
+reading pixels directly. Camera noise, auto-exposure, and screen refresh
+artifacts make static thresholding unreliable. Frame differencing elegantly
+sidesteps all these issues.
+
+### Tuning Parameters (Current)
+
+| Parameter | Value | Why |
+|---|---|---|
+| Scan strip position | 40–55% of ROI width | Balanced timing — not too early, not too late |
+| Diff threshold | 30 brightness levels | Filters camera noise while catching obstacles |
+| Trigger threshold | 150 pixel count | Above star/moon noise (~75 max), below smallest cactus |
+| Cooldown | 500ms | Prevents re-triggering on same obstacle as it scrolls through |
+| Post-jump guard | 800ms | Suppresses false duck triggers from dino's jump arc motion |
+
+### Hardware Performance
+
+- **Camera**: Logitech Brio USB webcam — stuck at 15fps regardless of resolution
+- **Resolution**: 640×480 (320×240 tested but no fps improvement, worse detection)
+- **Pipeline latency**: ~67–71ms total (dominated by frame capture interval)
+- **CV processing**: ~2ms (GaussianBlur + absdiff + threshold on 390×80 ROI)
+
+## What to Explore Next
+
+### High Priority
+
+1. **CSI camera module** — Should deliver 30–60fps, cutting pipeline latency
+   to 16–33ms. This is the single biggest improvement for higher scores.
+   The `camera.py` already supports CSI via picamera2.
+
+2. **Adaptive scan strip** — Move the scan strip position based on game speed.
+   At low speeds, scan further ahead (more reaction time). At high speeds,
+   scan closer (less time for false positives to recover). Could use score
+   display OCR or obstacle spacing timing to estimate speed.
+
+3. **Pterodactyl ducking reliability** — Current upper-zone detection is
+   fragile. Options:
+   - Lower the upper-zone trigger threshold (risk: star/moon false triggers)
+   - Use contour analysis on motion mask to distinguish pterodactyl shape
+   - Track obstacle height across frames for more confident classification
+
+### Medium Priority
+
+4. **Breakout/Pong plugin** (Phase 3) — Ball tracking via color or contour
+   detection. Mouse HID for paddle movement. Would prove the platform
+   handles mouse-based games too.
+
+5. **Pi Zero 2W testing** — Single-cable mode (power + HID via micro-USB).
+   Need to verify power budget and CV performance on the weaker CPU.
+
+6. **Auto-ROI detection** — Detect the game area automatically from a
+   reference frame instead of manual `game.ini` coordinates.
+
+### Low Priority
+
+7. **Score OCR** — Read the score display to log performance and potentially
+   adapt strategy based on game speed.
+
+8. **Recording mode** — Save camera footage with detection overlays for
+   debugging and demo videos.
+
+9. **Web calibration UI** — Flask app served from the Pi for adjusting ROI
+   and thresholds via a browser instead of editing `game.ini`.
 
 ## Known Risks and Mitigations
 
