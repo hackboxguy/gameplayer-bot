@@ -30,6 +30,12 @@ class Config:
     def camera_type(self):
         return self._parser.get("general", "camera_type", fallback="auto")
 
+    @camera_type.setter
+    def camera_type(self, value):
+        if not self._parser.has_section("general"):
+            self._parser.add_section("general")
+        self._parser.set("general", "camera_type", value)
+
     @property
     def camera_device(self):
         return self._parser.getint("general", "camera_device", fallback=0)
@@ -65,3 +71,20 @@ class Config:
 
     def getfloat(self, section, key, fallback=0.0):
         return self._parser.getfloat(section, key, fallback=fallback)
+
+    def set_roi(self, x1, y1, x2, y2):
+        """Update ROI values in the config file, preserving comments."""
+        import re
+        with open(self._path, "r") as f:
+            content = f.read()
+        for key, val in [("x1", x1), ("y1", y1), ("x2", x2), ("y2", y2)]:
+            content = re.sub(
+                rf"^({key}\s*=\s*).*$",
+                rf"\g<1>{val}",
+                content,
+                flags=re.MULTILINE,
+            )
+        with open(self._path, "w") as f:
+            f.write(content)
+        # Reload so in-memory values match
+        self._parser.read(self._path)

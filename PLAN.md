@@ -390,8 +390,8 @@ Full frame (640x480) → Crop to game ROI → CV processing → Action
 ```
 
 The game ROI (Region of Interest) is a small rectangle containing just the
-game area. This is calibrated once at startup (manually configured via
-`configs/game.ini`).
+game area. It can be auto-detected via `--auto-roi` or manually configured
+in `configs/game.ini`.
 
 ## Game Plugin Architecture
 
@@ -441,8 +441,8 @@ class ChromeDinoPlugin(GamePlugin):
         gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 0)  # kill camera noise
 
-        # Day/night detection from background brightness
-        bg_brightness = np.mean(gray[:15, :15])
+        # Day/night detection from center-left of ROI
+        bg_brightness = np.mean(gray[h//3:h//3+15, 10:25])
         is_night = bg_brightness < 128
 
         # Frame differencing: only moving objects produce signal
@@ -450,25 +450,31 @@ class ChromeDinoPlugin(GamePlugin):
         self._prev_gray = gray.copy()
         _, motion = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
 
-        # Narrow scan strip ahead of dino (40-55% of ROI width)
-        # Narrow strip = obstacle passes quickly = one trigger per obstacle
-        x_start = int(w * 0.40)
-        x_end = int(w * 0.55)
-        lower_zone = motion[h//2:, x_start:x_end]
-        upper_zone = motion[:h//2, x_start:x_end]
+        # Scan strip ahead of dino (28-38% of ROI width)
+        # Three vertical zones:
+        #   0-35%:  ignore (stars, moon, high ptero)
+        #   35-55%: duck zone (medium ptero at face level)
+        #   55-100%: jump zone (cactus, low ptero)
+        x_start, x_end = int(w * 0.28), int(w * 0.38)
+        y_ign, y_duck_end = int(h * 0.35), int(h * 0.55)
 
-        lower_triggered = np.sum(lower_zone > 0) > TRIGGER_THRESHOLD
-        upper_triggered = np.sum(upper_zone > 0) > TRIGGER_THRESHOLD
-        return {"lower": lower_triggered, "upper": upper_triggered, ...}
+        # Scene change detection (game-over/restart)
+        if np.sum(motion > 0) / (h * w) > 0.15:
+            return {"jump": False, "duck": False, ...}
+
+        duck_zone = motion[y_ign:y_duck_end, x_start:x_end]
+        jump_zone = motion[y_duck_end:, x_start:x_end]
+        return {
+            "jump": np.sum(jump_zone > 0) > TRIGGER_THRESHOLD,
+            "duck": np.sum(duck_zone > 0) > TRIGGER_THRESHOLD, ...
+        }
 
     def decide(self, state):
-        # Lower zone: cactus or low bird -> jump
-        if state["lower"]:
-            return {"action": "jump"}
-        # Upper zone: mid/high bird -> duck (with 800ms post-jump guard
-        # to avoid false triggers from dino's own jump motion)
-        elif state["upper"] and time_since_jump > 800:
+        # Duck takes priority (medium ptero can't be jumped over)
+        if state["duck"]:
             return {"action": "duck"}
+        elif state["jump"]:
+            return {"action": "jump"}
         return {"action": "none"}
 ```
 
@@ -535,7 +541,8 @@ y2 = 210
 
 [chrome-dino]
 # Pixel sum threshold to consider an obstacle detected in a zone
-trigger_threshold = 150
+# Scale this up if the ROI is larger (more pixels in scan zone)
+trigger_threshold = 500
 # Cooldown between actions (ms)
 cooldown_ms = 500
 
@@ -651,13 +658,22 @@ produce adequate paddle movement.
 ### Chrome Dino — Working
 
 The bot reliably plays Chrome Dino in both day and night modes, consistently
-scoring **470–580** before failing. The main failure modes at higher scores:
+scoring **400–500** before failing. Key improvements in this iteration:
 
+- **Auto-ROI detection** (`--auto-roi`): Automatically finds the game area
+  by detecting the ground line using uniformity mask + Canny/Hough within
+  the uniform region. Robust across different camera placements.
+- **Three-zone detection**: Ignore zone (stars/moon/high ptero), duck zone
+  (medium pterodactyl at face level), jump zone (cactus/low ptero).
+  Duck takes priority over jump.
+- **Scene change suppression**: Prevents false triggers during game-over
+  and restart transitions (>15% of ROI pixels changed = scene change).
+
+Main failure modes at higher scores:
 - **Late jumps** (~500+ score): Game speed outpaces the 67ms frame interval.
   The scan strip detects the obstacle but the jump arrives too late.
-- **Pterodactyl ducking**: Mid-level pterodactyls require ducking. The upper
-  zone detection works but is less reliable — stars/moon in night mode and
-  the dino's own jump arc create false motion that must be filtered out.
+- **Early jumps on wide obstacles**: Four-cactus clusters enter the scan
+  zone earlier due to their width, causing premature jumps at low speed.
 
 ### Detection Algorithm Evolution
 
@@ -685,11 +701,14 @@ sidesteps all these issues.
 
 | Parameter | Value | Why |
 |---|---|---|
-| Scan strip position | 40–55% of ROI width | Balanced timing — not too early, not too late |
+| Scan strip position | 28–38% of ROI width | Balanced timing for both slow and fast game speeds |
 | Diff threshold | 30 brightness levels | Filters camera noise while catching obstacles |
-| Trigger threshold | 150 pixel count | Above star/moon noise (~75 max), below smallest cactus |
+| Trigger threshold | 500 pixel count | Scaled for auto-detected ROI size (~530x197). Above noise, below smallest cactus |
 | Cooldown | 500ms | Prevents re-triggering on same obstacle as it scrolls through |
-| Post-jump guard | 800ms | Suppresses false duck triggers from dino's jump arc motion |
+| Ignore zone | 0–35% of ROI height | Filters stars, moon, and high pterodactyls (safe to run under) |
+| Duck zone | 35–55% of ROI height | Medium pterodactyl at face level → duck |
+| Jump zone | 55–100% of ROI height | Cactus / low pterodactyl → jump |
+| Scene change threshold | 15% of ROI pixels | Suppresses triggers during game-over/restart transitions |
 
 ### Hardware Performance
 
@@ -699,6 +718,21 @@ sidesteps all these issues.
 - **CV processing**: ~2ms (GaussianBlur + absdiff + threshold on 390×80 ROI)
 
 ## What to Explore Next
+
+### Completed
+
+- **Auto-ROI detection** — `--auto-roi` automatically detects the game area.
+  Uses uniformity mask to find the browser dark area, then Canny + Hough
+  to locate the ground line as a vertical anchor. Edge scan finds the full
+  ground line extent, and fixed game-proportion ratios build the ROI.
+  Robust across different camera placements (tested with 8+ positions).
+
+- **Three-zone obstacle detection** — Replaced two-zone (upper/lower) with
+  three zones: ignore (0-35%), duck (35-55%), jump (55-100%). Fixes missed
+  ducks on medium-height pterodactyls and filters stars/moon false triggers.
+
+- **Scene change detection** — Suppresses all triggers when >15% of ROI
+  pixels change between frames (game-over/restart transitions).
 
 ### High Priority
 
@@ -711,23 +745,14 @@ sidesteps all these issues.
    scan closer (less time for false positives to recover). Could use score
    display OCR or obstacle spacing timing to estimate speed.
 
-3. **Pterodactyl ducking reliability** — Current upper-zone detection is
-   fragile. Options:
-   - Lower the upper-zone trigger threshold (risk: star/moon false triggers)
-   - Use contour analysis on motion mask to distinguish pterodactyl shape
-   - Track obstacle height across frames for more confident classification
-
 ### Medium Priority
 
-4. **Breakout/Pong plugin** (Phase 3) — Ball tracking via color or contour
+3. **Breakout/Pong plugin** (Phase 3) — Ball tracking via color or contour
    detection. Mouse HID for paddle movement. Would prove the platform
    handles mouse-based games too.
 
-5. **Pi Zero 2W testing** — Single-cable mode (power + HID via micro-USB).
+4. **Pi Zero 2W testing** — Single-cable mode (power + HID via micro-USB).
    Need to verify power budget and CV performance on the weaker CPU.
-
-6. **Auto-ROI detection** — Detect the game area automatically from a
-   reference frame instead of manual `game.ini` coordinates.
 
 ### Low Priority
 
