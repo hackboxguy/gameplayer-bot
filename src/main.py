@@ -538,18 +538,21 @@ def run(cfg):
                     pk_lo = getattr(plugin, '_peak_lower', 0)
                     pk_up = getattr(plugin, '_peak_upper', 0)
                     pk_mr = getattr(plugin, '_peak_mr', 0)
-                    pk_ign = getattr(plugin, '_peak_ignore', 0)
-                    dbg = (f" lo={plugin._debug_lower}"
-                           f" up={plugin._debug_upper}"
-                           f" ign={getattr(plugin, '_debug_ignore', 0)}"
-                           f" pk_lo={pk_lo} pk_up={pk_up} pk_ign={pk_ign}"
+                    pk_spd = getattr(plugin, '_peak_speed', 0)
+                    spd = getattr(plugin, '_debug_speed', 0)
+                    jx = getattr(plugin, '_debug_jx_pct', 0)
+                    dbg = (f" lo={plugin._debug_lower:.0%}"
+                           f" cy={plugin._debug_upper:.0%}"
+                           f" spd={spd:.1f} pk_spd={pk_spd:.1f}"
+                           f" jx={jx:.0%}"
+                           f" pk_lo={pk_lo:.0%} pk_fd={pk_up:.1%}"
                            f" bg={state.get('bg_brightness', 0):.0f}"
                            f" pk_mr={pk_mr:.2f}{'!SC' if sc else ''}")
                     # Reset peaks for next interval
                     plugin._peak_lower = 0
                     plugin._peak_upper = 0
                     plugin._peak_mr = 0.0
-                    plugin._peak_ignore = 0
+                    plugin._peak_speed = 0.0
                 print(f"  fps={fps:.1f} action={action.get('action', '?')}"
                       f" night={state.get('is_night', '?')}{dbg}")
                 frame_count = 0
