@@ -47,8 +47,13 @@ echo "[2/4] Configuring USB gadget mode..."
 CONFIG_TXT="/boot/firmware/config.txt"
 MODULES_FILE="/etc/modules"
 
-# Add dtoverlay=dwc2 under [all] section if not present
-if ! grep -q "^dtoverlay=dwc2" "$CONFIG_TXT" 2>/dev/null; then
+# Ensure dtoverlay=dwc2,dr_mode=peripheral is in [all] section.
+# Remove any existing dwc2 host-mode overlays (e.g. dr_mode=host under [cm5])
+# that conflict with gadget/peripheral mode.
+sed -i '/^dtoverlay=dwc2,dr_mode=host/d' "$CONFIG_TXT"
+
+# Check if peripheral-mode overlay already present anywhere
+if ! grep -q "^dtoverlay=dwc2,dr_mode=peripheral" "$CONFIG_TXT" 2>/dev/null; then
     # Insert after [all] section header (create it if missing)
     if grep -q "^\[all\]" "$CONFIG_TXT"; then
         sed -i '/^\[all\]/a dtoverlay=dwc2,dr_mode=peripheral' "$CONFIG_TXT"
@@ -57,7 +62,7 @@ if ! grep -q "^dtoverlay=dwc2" "$CONFIG_TXT" 2>/dev/null; then
     fi
     echo "  Added dtoverlay=dwc2,dr_mode=peripheral to $CONFIG_TXT [all] section"
 else
-    echo "  dtoverlay=dwc2 already in $CONFIG_TXT"
+    echo "  dtoverlay=dwc2,dr_mode=peripheral already in $CONFIG_TXT"
 fi
 
 # Add dwc2 and libcomposite to /etc/modules (loaded at boot)

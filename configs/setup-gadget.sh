@@ -8,10 +8,24 @@ set -e
 
 GADGET_DIR=/sys/kernel/config/usb_gadget/gameplayer-bot
 
-# Exit if already configured
+# Exit if already configured AND bound to a UDC
 if [ -d "$GADGET_DIR" ]; then
-    echo "gameplayer-bot gadget already configured"
-    exit 0
+    CURRENT_UDC=$(cat "$GADGET_DIR/UDC" 2>/dev/null)
+    if [ -n "$CURRENT_UDC" ]; then
+        echo "gameplayer-bot gadget already configured (UDC=$CURRENT_UDC)"
+        exit 0
+    fi
+    # Directory exists but not bound — clean up and reconfigure
+    echo "gameplayer-bot gadget directory exists but not bound, reconfiguring..."
+    echo "" > "$GADGET_DIR/UDC" 2>/dev/null || true
+    rm -f "$GADGET_DIR/configs/c.1/hid.keyboard" 2>/dev/null
+    rm -f "$GADGET_DIR/configs/c.1/hid.mouse" 2>/dev/null
+    rmdir "$GADGET_DIR/configs/c.1/strings/0x409" 2>/dev/null
+    rmdir "$GADGET_DIR/configs/c.1" 2>/dev/null
+    rmdir "$GADGET_DIR/functions/hid.keyboard" 2>/dev/null
+    rmdir "$GADGET_DIR/functions/hid.mouse" 2>/dev/null
+    rmdir "$GADGET_DIR/strings/0x409" 2>/dev/null
+    rmdir "$GADGET_DIR" 2>/dev/null
 fi
 
 # Create gadget
