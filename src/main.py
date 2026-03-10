@@ -553,8 +553,10 @@ def run(cfg):
                     plugin._peak_upper = 0
                     plugin._peak_mr = 0.0
                     plugin._peak_speed = 0.0
+                paused = state.get('game_paused', False)
+                pause_tag = " PAUSED" if paused else ""
                 print(f"  fps={fps:.1f} action={action.get('action', '?')}"
-                      f" night={state.get('is_night', '?')}{dbg}")
+                      f" night={state.get('is_night', '?')}{dbg}{pause_tag}")
                 frame_count = 0
                 start_time = time.time()
 
