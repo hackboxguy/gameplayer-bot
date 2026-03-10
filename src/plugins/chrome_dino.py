@@ -59,6 +59,7 @@ class ChromeDinoPlugin(GamePlugin):
         self._peak_mr = 0.0
         self._peak_ignore = 0
         self._peak_speed = 0.0
+        self._ptero_suspect = 0   # frames of early ptero warning
 
     def setup(self, config):
         self._trigger_threshold = config.getint(
@@ -174,26 +175,43 @@ class ChromeDinoPlugin(GamePlugin):
 
         # Density thresholds
         JUMP_DENSITY = 0.08
-        # Ptero detection: must have significant motion (>2% density, filters
-        # noise at 0.5-1.8%) AND centroid above 65% (cactuses are at 81-87%).
+        # Ptero confirmed: >2% density AND centroid above 65%
         PTERO_MIN_DENSITY = 0.02
         PTERO_CENTROID = 0.65
+        # Ptero early-warning: lower thresholds to suppress premature jumps.
+        # Catches ptero leading edges before full body enters duck strip.
+        PTERO_EARLY_DENSITY = 0.005  # 0.5% — above noise floor
+        PTERO_EARLY_CENTROID = 0.70  # below cactus range (81-87%)
 
         # Suppress triggers during scene changes (game over/restart)
         if scene_change:
             self._speed = 0.0  # reset ratchet on game-over
+            self._ptero_suspect = 0
             duck_triggered = False
             jump_triggered = False
         else:
             jump_triggered = scan_density > JUMP_DENSITY
             duck_triggered = False
-            # Ptero detection: significant motion with centroid above ground.
-            # Cactuses: centroid ~81-87% (rooted to ground).
-            # Pteros: centroid ~50-65% (floating at head height).
-            # Noise: density <2% (scattered pixels, ignore).
+
+            # Ptero early-warning: track frames with high centroid motion.
+            # When the wide strip shows elevated motion (>0.5%) with centroid
+            # above ground (<70%), something is floating — likely a ptero.
+            if full_density > PTERO_EARLY_DENSITY and centroid_y < PTERO_EARLY_CENTROID:
+                self._ptero_suspect = min(self._ptero_suspect + 1, 4)
+            else:
+                if self._ptero_suspect > 0:
+                    self._ptero_suspect -= 1
+
+            # Suppress jump while ptero is suspected (max 4 frames ≈ 130ms).
+            # Safe because cactus centroid is 81-87%, never below 70%.
+            if jump_triggered and self._ptero_suspect > 0:
+                jump_triggered = False
+
+            # Ptero confirmed: significant density with high centroid → duck
             if full_density > PTERO_MIN_DENSITY and centroid_y < PTERO_CENTROID:
                 duck_triggered = True
-                jump_triggered = False  # override: duck, don't jump into ptero
+                jump_triggered = False
+                self._ptero_suspect = 0  # confirmed, reset
 
         # Save debug images after camera stabilizes
         self._frame_count += 1
@@ -250,7 +268,7 @@ class ChromeDinoPlugin(GamePlugin):
         # must be ducked, not jumped into.
         if state["duck"]:
             print(f"  >> DUCK jmp={self._debug_lower:.0%} cy={self._debug_upper:.0%}"
-                  f" fd={self._debug_ignore:.1%}"
+                  f" fd={self._debug_ignore:.1%} ps={self._ptero_suspect}"
                   f" spd={self._debug_speed:.1f} jx={self._debug_jx_pct:.0%}"
                   f" mr={self._debug_motion_ratio:.2f}")
             self._last_action_time = now_ms
@@ -260,7 +278,7 @@ class ChromeDinoPlugin(GamePlugin):
         elif state["jump"]:
             # Jump zone: cactus or low pterodactyl
             print(f"  >> JUMP jmp={self._debug_lower:.0%} cy={self._debug_upper:.0%}"
-                  f" fd={self._debug_ignore:.1%}"
+                  f" fd={self._debug_ignore:.1%} ps={self._ptero_suspect}"
                   f" spd={self._debug_speed:.1f} jx={self._debug_jx_pct:.0%}"
                   f" mr={self._debug_motion_ratio:.2f}")
             self._last_action_time = now_ms

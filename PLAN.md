@@ -437,56 +437,65 @@ lesson learned — static thresholding on camera images is unreliable because:
 Frame differencing (`cv2.absdiff(current, previous)`) naturally cancels all
 static elements. Only moving objects (scrolling obstacles) produce signal.
 
+#### Detection Architecture
+
+The plugin uses **density-based detection** (fraction of pixels with motion)
+rather than raw pixel counts. This makes detection independent of ROI size.
+
+**Speed measurement** — `cv2.phaseCorrelate` on the ground texture strip
+measures horizontal scroll speed in px/frame. Uses a **one-way ratchet**:
+speed only increases during a run (Chrome Dino never slows down), resets
+to 0 on scene change (game-over). This prevents speed drops when obstacles
+corrupt the ground strip measurement.
+
+**Adaptive scan strips** — The jump strip position shifts further ahead at
+higher speeds (27% at game start → 40% at max speed), giving more lead time
+for faster obstacles. Jump strip width is constant at 6%.
+
+**Obstacle classification** — Uses vertical centroid of motion in a wide
+strip (20-45% x-range) to distinguish cactuses from pterodactyls:
+- Cactuses: centroid ~81-87% (rooted to ground)
+- Pterodactyls: centroid ~50-65% (floating)
+- Noise: centroid varies but density <2%
+
+**Pterodactyl early-warning** — A `_ptero_suspect` counter tracks frames
+with elevated motion (>0.5%) and high centroid (<70%). While active (up to
+4 frames ≈ 130ms), jump triggers are suppressed to prevent jumping into an
+approaching ptero. Safe because cactus centroid is 81-87%, never below 70%.
+
+**Adaptive cooldown** — Cooldown between actions shortens at higher speeds
+(350ms at start → 100ms at max speed) to handle closely-spaced obstacles.
+
+**Scene change detection** — Suppresses all triggers when >15% of ROI
+pixels change between frames (game-over/restart transitions). Resets speed
+ratchet and ptero suspect counter.
+
+#### Key Parameters
+
 ```python
-class ChromeDinoPlugin(GamePlugin):
-    name = "chrome-dino"
-    hid_type = "keyboard"
-
-    def detect(self, frame):
-        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 0)  # kill camera noise
-
-        # Day/night detection from center-left of ROI
-        bg_brightness = np.mean(gray[h//3:h//3+15, 10:25])
-        is_night = bg_brightness < 128
-
-        # Frame differencing: only moving objects produce signal
-        diff = cv2.absdiff(gray, self._prev_gray)
-        self._prev_gray = gray.copy()
-        _, motion = cv2.threshold(diff, 30, 255, cv2.THRESH_BINARY)
-
-        # Two scan strips ahead of dino (at ~10-15%):
-        #   Jump strip: 27-33% — narrow/close for well-timed cactus jumps
-        #   Duck strip: 20-34% — wider to catch fast pterodactyls
-        # Bottom 40% (y>=60%) for ground obstacles, top 60% for pteros.
-        jx_start, jx_end = int(w * 0.27), int(w * 0.33)
-        dx_start, dx_end = int(w * 0.20), int(w * 0.34)
-        y_ground = int(h * 0.60)
-
-        # Scene change detection (game-over/restart)
-        if np.sum(motion > 0) / (h * w) > 0.15:
-            return {"jump": False, "duck": False, ...}
-
-        scan = motion[y_ground:, jx_start:jx_end]    # ground level
-        upper = motion[:y_ground, dx_start:dx_end]    # above ground
-        scan_sum = np.sum(scan > 0)
-        upper_sum = np.sum(upper > 0)
-
-        jump = scan_sum > TRIGGER_THRESHOLD
-        duck = False
-        # Upper-only motion = pterodactyl (cactuses always have ground motion)
-        if upper_sum > TRIGGER_THRESHOLD and not jump:
-            duck = True
-        return {"jump": jump, "duck": duck, ...}
-
-    def decide(self, state):
-        # Duck takes priority (face-level ptero can't be jumped over)
-        if state["duck"]:
-            return {"action": "duck"}
-        elif state["jump"]:
-            return {"action": "jump"}
-        return {"action": "none"}
+JX_BASE = 0.27       # jump strip start at minimum speed
+JX_MAX = 0.40        # jump strip start at maximum speed
+JX_WIDTH = 0.06      # jump strip width (constant)
+DX_START = 0.20      # duck strip start (fixed, wide)
+DX_END = 0.45        # duck strip end (fixed, wide)
+DY_END = 0.40        # duck zone vertical limit (top 40% of ROI only)
+SPEED_MIN = 2.0      # px/frame at game start
+SPEED_MAX = 20.0     # px/frame at high speed (~600+ score)
+COOLDOWN_MIN_MS = 100 # minimum cooldown at max speed
+COOLDOWN_MAX_MS = 350 # maximum cooldown at min speed
+JUMP_DENSITY = 0.08  # 8% of scan pixels must have motion
+PTERO_MIN_DENSITY = 0.02  # 2% for confirmed ptero
+PTERO_CENTROID = 0.65     # centroid must be above 65% (floating)
 ```
+
+#### Known Failure Modes
+
+- **Night-to-day transition with obstacle present**: The brightness change
+  triggers scene_change detection (motion_ratio > 0.15), which suppresses
+  all triggers. If an obstacle is present during the transition, it gets
+  missed. Transitions without obstacles work fine.
+- **Very high-flying pterodactyl**: Ptero at the very top of the ROI may
+  not accumulate enough density in the wide strip for confirmed detection.
 
 ### Plugin: Breakout / Pong (Paddle Game)
 
@@ -551,9 +560,14 @@ y2 = 210
 
 [chrome-dino]
 # Pixel sum threshold to consider an obstacle detected in a zone
+# Higher values = less sensitive (fewer false jumps from camera noise)
 # Scale this up if the ROI is larger (more pixels in scan zone)
 trigger_threshold = 300
-# Cooldown between actions (ms)
+# Pixel sum threshold for pterodactyl detection in upper zone
+# Lower than trigger_threshold because ptero motion is smaller
+duck_threshold = 90
+# Cooldown between actions (ms) — must be long enough to avoid
+# re-jumping on the same obstacle as it scrolls through
 cooldown_ms = 350
 
 [breakout]
@@ -611,7 +625,7 @@ gameplayer-bot/
 - Chrome Dino plugin: frame differencing obstacle detection
 - Jump/duck via keyboard HID
 - CSI camera support (ov5647) — 32fps, ~2x faster than USB camera
-- **Result**: Scores 400–619 with CSI camera at 32fps.
+- **Result**: Scores 600–930 with CSI camera at 32fps.
   See "Current Status" section below for details.
 
 ### Phase 3: Breakout/Pong (Mouse Game)
@@ -664,46 +678,52 @@ gameplayer-bot/
 | **Total pipeline latency** | **~67-71ms** | |
 
 The CSI camera's 32fps (~31ms per frame) roughly halves the pipeline latency
-compared to the USB camera (15fps, ~67ms). This enables scores of 400-619
+compared to the USB camera (15fps, ~67ms). This enables scores of 600-930
 with the Chrome Dino plugin.
 
 For mouse-based games (Breakout/Pong), continuous tracking means individual
 frame latency matters less — small dx corrections every 31ms should produce
 smooth paddle movement.
 
-## Current Status & Results (March 2025)
+## Current Status & Results (March 2026)
 
 ### Chrome Dino — Working
 
 The bot reliably plays Chrome Dino in both day and night modes, scoring
-**400–619** with CSI camera at 32fps. Key improvements:
+**600–930** with CSI camera at 32fps. Key improvements:
 
 - **CSI camera** (ov5647): 32fps vs USB camera's 15fps. Halved pipeline
   latency enables higher scores and better reaction time.
 - **Guided ROI detection** (`--guided-roi`): User places a white Notepad
   window sized to match the game baseline. Camera detects the white
   rectangle and calculates ROI from game proportions. Most reliable method.
-- **Auto-ROI detection** (`--auto-roi`): Automatically finds the game area
-  by detecting the ground line using uniformity mask + Canny/Hough within
-  the uniform region. Robust across different camera placements.
-- **Dual-strip detection**: Narrow jump strip (27-33%) for well-timed
-  cactus jumps. Wider duck strip (20-34%) to catch fast pterodactyls.
-  Ground level (y>=60%) for cactuses, upper zone for pterodactyls.
-- **Pterodactyl handling**: Upper-only motion (no ground motion) triggers
-  duck. Ground motion triggers jump. Cactuses always have ground motion;
-  pterodactyls float above.
+- **Auto-ROI detection** (`--auto-roi`): Automatically finds game area via
+  uniformity mask + ground line detection. Works across different camera
+  placements.
+- **Density-based detection**: Uses fraction of pixels with motion instead
+  of raw pixel counts. ROI-size-independent — works across different ROI
+  sizes without threshold retuning.
+- **Speed-adaptive scan strip**: Phase correlation measures scroll speed.
+  Jump strip moves further ahead at higher speeds (27% → 40%). One-way
+  speed ratchet prevents drops during obstacle corruption.
+- **Centroid-based ptero detection**: Vertical centroid of motion
+  distinguishes floating pterodactyls (centroid <65%) from grounded
+  cactuses (centroid 81-87%). More robust than zone-based approach.
+- **Ptero early-warning suppression**: Tracks frames with elevated
+  floating motion to suppress premature jumps before ptero is confirmed.
+- **Adaptive cooldown**: 350ms at slow speed → 100ms at max speed for
+  closely-spaced obstacles at high speed.
+- **Day/night handling**: Works across day/night transitions when no
+  obstacle is present during the brightness change.
 - **Scene change suppression**: Prevents false triggers during game-over
   and restart transitions (>15% of ROI pixels changed = scene change).
 
 Main failure modes at higher scores:
-- **Fixed scan position**: The jump strip is at a fixed x position. At low
-  speeds, this gives plenty of lead time (sometimes too much — early jumps).
-  At high speeds (>300 score), obstacles arrive faster and the fixed strip
-  doesn't provide enough lead time. Adaptive speed-based scan positioning
-  is the planned fix (see "High Priority" below).
-- **Pterodactyl at boundary heights**: Pterodactyls flying at exactly the
-  60% y-boundary can split motion between upper and ground zones, causing
-  inconsistent duck/jump decisions.
+- **Night-to-day transition with obstacle**: The brightness change during
+  day/night mode switch triggers scene_change suppression, missing any
+  obstacle present during the transition.
+- **Very high-flying pterodactyl**: Ptero near the top of ROI may not
+  accumulate enough density for confirmed detection.
 
 ### Detection Algorithm Evolution
 
@@ -731,13 +751,17 @@ sidesteps all these issues.
 
 | Parameter | Value | Why |
 |---|---|---|
-| Jump strip position | 27–33% of ROI width | Narrow strip close to dino for well-timed cactus jumps |
-| Duck strip position | 20–34% of ROI width | Wider strip to catch fast pterodactyls at high speed |
-| Ground split | 60% of ROI height | Above: pterodactyl territory. Below: cactus territory |
+| Jump strip | 27–40% adaptive + 6% width | Shifts right at higher speed for more lead time |
+| Duck strip | 20–45% of ROI width | Wide strip for centroid-based ptero detection |
+| Ground split | 50% of ROI height | Jump scan uses lower half only |
+| Duck zone limit | Top 40% (DY_END) | Avoids scrolling ground features at 40-50% |
 | Diff threshold | 30 brightness levels | Filters camera noise while catching obstacles |
-| Trigger threshold | 300 pixel count | Scaled for current scan zone size |
-| Cooldown | 350ms | Allows consecutive jumps for closely-spaced cactuses at high speed |
-| Scene change threshold | 15% of ROI pixels | Suppresses triggers during game-over/restart transitions |
+| Jump density | 8% of scan pixels | ROI-size-independent; works in day and night modes |
+| Ptero density | 2% of strip + centroid < 65% | Distinguishes floating ptero from grounded cactus |
+| Ptero early-warning | 0.5% density + centroid < 70% | Suppresses premature jumps for up to 4 frames |
+| Cooldown | 350ms (slow) → 100ms (fast) | Adaptive; shorter at high speed for close obstacles |
+| Speed range | 2–20 px/frame | Measured via phase correlation, one-way ratchet |
+| Scene change | 15% of ROI pixels | Suppresses triggers during game-over/restart |
 
 ### Hardware Performance
 
@@ -767,21 +791,33 @@ sidesteps all these issues.
   ground line extent, and fixed game-proportion ratios build the ROI.
   Robust across different camera placements (tested with 8+ positions).
 
-- **Dual-strip obstacle detection** — Narrow jump strip (27-33%) for
-  well-timed cactus jumps. Wider duck strip (20-34%) for fast pterodactyls.
-  Ground level split at 60%: below = cactus (jump), above = pterodactyl
-  (duck if upper-only, jump if ground-only).
+- **Density-based detection** — Fraction of pixels with motion instead of
+  raw pixel counts. ROI-size-independent. JUMP_DENSITY=8%, PTERO_MIN=2%.
+
+- **Speed-adaptive scan strip** — Phase correlation on ground texture
+  measures scroll speed. Jump strip shifts from 27% (slow) to 40% (fast).
+  One-way speed ratchet prevents drops mid-game. Resets on game-over.
+
+- **Centroid-based ptero detection** — Vertical centroid distinguishes
+  floating pterodactyls (centroid <65%) from grounded cactuses (81-87%).
+  Replaced zone-based upper/lower approach which was fragile.
+
+- **Ptero early-warning suppression** — Tracks frames with elevated
+  floating motion (>0.5%, centroid <70%) to suppress premature jumps
+  for up to 4 frames before ptero is confirmed with full density.
+
+- **Adaptive cooldown** — 350ms at game start, 100ms at max speed.
+  Handles closely-spaced obstacles at high speed.
 
 - **Scene change detection** — Suppresses all triggers when >15% of ROI
   pixels change between frames (game-over/restart transitions).
 
 ### High Priority
 
-1. **Adaptive scan strip (speed-based)** — Use `cv2.phaseCorrelate` on the
-   ground texture between consecutive frames to measure horizontal scroll
-   speed in pixels/frame. Shift the jump strip further ahead at higher
-   speeds (more lead time), closer at low speeds (less early jumping).
-   Self-correcting on game restart (speed drops to 0).
+1. **Night-to-day transition fix** — Scene change detection (motion_ratio
+   > 0.15) suppresses all triggers during day/night brightness transitions.
+   If an obstacle is present during the transition, it gets missed. Need to
+   distinguish brightness-only transitions from actual game-over events.
 
 ### Medium Priority
 
