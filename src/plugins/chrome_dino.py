@@ -197,13 +197,15 @@ class ChromeDinoPlugin(GamePlugin):
 
         # Density thresholds
         JUMP_DENSITY = 0.08
-        # Ptero confirmed: >2% density AND centroid above 65%
+        # Ptero confirmed: >2% density AND centroid above 50%.
+        # Low pteros (cy 55-65%) must be jumped, not ducked — only duck
+        # for medium/high pteros clearly above body height (cy < 50%).
         PTERO_MIN_DENSITY = 0.02
-        PTERO_CENTROID = 0.65
+        PTERO_CENTROID = 0.50
         # Ptero early-warning: lower thresholds to suppress premature jumps.
         # Catches ptero leading edges before full body enters duck strip.
         PTERO_EARLY_DENSITY = 0.005  # 0.5% — above noise floor
-        PTERO_EARLY_CENTROID = 0.70  # below cactus range (81-87%)
+        PTERO_EARLY_CENTROID = 0.55  # below low-ptero range (55-65%)
 
         # Suppress triggers during scene changes or game paused/over.
         if scene_change or self._game_paused:
