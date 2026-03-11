@@ -137,7 +137,8 @@ It is **idempotent** — safe to re-run after pulling new code.
 1. **Install system dependencies**:
    ```bash
    apt install -y --no-install-recommends \
-       python3-opencv python3-picamera2 python3-numpy python3-libcamera
+       python3-opencv python3-picamera2 python3-numpy python3-libcamera \
+       triggerhappy
    ```
 
 2. **Configure boot for USB gadget mode** (if not already done):
@@ -155,15 +156,46 @@ It is **idempotent** — safe to re-run after pulling new code.
 
 4. **Install game player service**:
    - Install `configs/gameplayer-bot.service` → `/etc/systemd/system/`
-   - Service runs: `/usr/bin/python3 /home/pi/gameplayer-bot/src/main.py`
+   - Service runs: `/usr/bin/python3 <repo>/src/main.py --boot --camera csi`
    - **Do NOT enable by default** (user must manually start during dev)
 
-5. **Print status and next steps**
+5. **Install hotkey support** (trigger-happy):
+   - Save repo path to `/etc/gameplayer-bot.env` (sourced by scripts at runtime)
+   - Make `scripts/gp-calibrate.sh`, `gp-start.sh`, `gp-stop.sh` executable
+   - Generate `/etc/triggerhappy/triggers.d/gameplayer-bot.conf` from
+     `configs/gameplayer-bot.triggers` template (substitutes `__REPO_DIR__`)
+   - Install systemd drop-in override for triggerhappy to run as root
+     (needed for LED control and HID access)
+   - Enable and restart `triggerhappy.service`
+
+6. **Print status and next steps**
 
 ### With `--autostart` Flag
 
 Same as above, plus:
 - `systemctl enable gameplayer-bot.service` (starts game player on boot)
+
+### Hotkey Operation (3-Key USB Keyboard)
+
+For headless operation without SSH, a 3-key USB mini keyboard can control the
+bot via trigger-happy (thd):
+
+| Key | Action | Script |
+|---|---|---|
+| KEY_1 | Guided ROI calibration (LED blinks) | `scripts/gp-calibrate.sh` |
+| KEY_2 | Start/restart game player | `scripts/gp-start.sh` |
+| KEY_3 | Stop game player + cleanup | `scripts/gp-stop.sh` |
+
+**Typical workflow**:
+1. Place white Notepad window over game baseline on host PC
+2. Press KEY_1 → Pi blinks green LED during calibration
+3. Remove Notepad, open Chrome Dino game
+4. Press KEY_2 → Pi sends spacebar + starts playing
+5. After game-over, press KEY_2 again → kills old process + restarts fresh
+6. Press KEY_3 → stops everything, restores LED
+
+Scripts source `/etc/gameplayer-bot.env` for the repo path, so the deployment
+works regardless of where the repo is cloned.
 
 ### Manual Service Control
 
@@ -248,8 +280,14 @@ HID device (keyboard + mouse):
 
 GADGET_DIR=/sys/kernel/config/usb_gadget/gameplayer-bot
 
-# Exit if already configured
-[ -d "$GADGET_DIR" ] && exit 0
+# Check if already configured AND bound to UDC
+if [ -d "$GADGET_DIR" ]; then
+    if [ -n "$(cat "$GADGET_DIR/UDC" 2>/dev/null)" ]; then
+        exit 0  # already configured and bound
+    fi
+    # Directory exists but not bound — clean up and reconfigure
+    rm -rf "$GADGET_DIR"
+fi
 
 # Create gadget
 mkdir -p $GADGET_DIR
@@ -327,10 +365,10 @@ Requires=gameplayer-bot-gadget.service
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/bin/python3 /home/pi/gameplayer-bot/src/main.py
+ExecStart=/usr/bin/python3 /home/pi/gameplayer-bot/src/main.py --boot --camera csi
 WorkingDirectory=/home/pi/gameplayer-bot
 Restart=on-failure
-RestartSec=5
+RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
@@ -385,7 +423,7 @@ while True:
 
 ```
 Full frame (640x480) → Crop to game ROI → CV processing → Action
-        ~16ms              <1ms              ~3-5ms        <1ms
+        ~16ms (60fps)      <1ms              ~2ms          <1ms
                                                     Total: ~20ms
 ```
 
@@ -455,7 +493,8 @@ for faster obstacles. Jump strip width is constant at 6%.
 **Obstacle classification** — Uses vertical centroid of motion in a wide
 strip (20-45% x-range) to distinguish cactuses from pterodactyls:
 - Cactuses: centroid ~81-87% (rooted to ground)
-- Pterodactyls: centroid ~50-65% (floating)
+- Low pterodactyls: centroid ~55-65% (jumped, not ducked)
+- Medium/high pterodactyls: centroid <50% (ducked)
 - Noise: centroid varies but density <2%
 
 **Pterodactyl early-warning** — A `_ptero_suspect` counter tracks frames
@@ -479,13 +518,16 @@ JX_WIDTH = 0.06      # jump strip width (constant)
 DX_START = 0.20      # duck strip start (fixed, wide)
 DX_END = 0.45        # duck strip end (fixed, wide)
 DY_END = 0.40        # duck zone vertical limit (top 40% of ROI only)
-SPEED_MIN = 2.0      # px/frame at game start
-SPEED_MAX = 20.0     # px/frame at high speed (~600+ score)
+# Speed thresholds defined at 30fps reference, auto-scaled for other fps:
+SPEED_MIN_30 = 2.0   # px/frame at game start (30fps reference)
+SPEED_MAX_30 = 20.0  # px/frame at high speed (30fps reference)
+# At 60fps: SPEED_MIN=1.0, SPEED_MAX=10.0 (scaled by 30/fps)
 COOLDOWN_MIN_MS = 100 # minimum cooldown at max speed
 COOLDOWN_MAX_MS = 350 # maximum cooldown at min speed
 JUMP_DENSITY = 0.08  # 8% of scan pixels must have motion
 PTERO_MIN_DENSITY = 0.02  # 2% for confirmed ptero
-PTERO_CENTROID = 0.65     # centroid must be above 65% (floating)
+PTERO_CENTROID = 0.50     # centroid < 50% = duck (medium/high ptero)
+PTERO_EARLY_CENTROID = 0.55  # early-warning: < 55% = suspect ptero
 ```
 
 #### Known Failure Modes
@@ -547,7 +589,7 @@ camera_device = 0
 # Camera resolution and framerate
 camera_width = 640
 camera_height = 480
-camera_fps = 30
+camera_fps = 60
 
 [roi]
 # Game area coordinates in camera frame (pixels)
@@ -592,7 +634,12 @@ gameplayer-bot/
 │   ├── game.ini                      Game plugin + ROI + tuning config
 │   ├── setup-gadget.sh               USB HID composite gadget script
 │   ├── gameplayer-bot-gadget.service  systemd: create HID gadget at boot
-│   └── gameplayer-bot.service         systemd: run game player
+│   ├── gameplayer-bot.service         systemd: run game player
+│   └── gameplayer-bot.triggers       trigger-happy hotkey template
+├── scripts/
+│   ├── gp-calibrate.sh              KEY_1: guided ROI calibration (LED blinks)
+│   ├── gp-start.sh                  KEY_2: start/restart game player
+│   └── gp-stop.sh                   KEY_3: stop game player + cleanup
 ├── src/
 │   ├── main.py                       Entry point (main game loop)
 │   ├── camera.py                     picamera2 wrapper
@@ -624,8 +671,12 @@ gameplayer-bot/
 - Manual ROI config via `configs/game.ini`
 - Chrome Dino plugin: frame differencing obstacle detection
 - Jump/duck via keyboard HID
-- CSI camera support (ov5647) — 32fps, ~2x faster than USB camera
-- **Result**: Scores 600–930 with CSI camera at 32fps.
+- CSI camera support (ov5647) — 60fps at 640×480
+- FPS-adaptive speed constants (30fps reference, auto-scaled)
+- Ptero centroid thresholds tuned (duck only for cy <50%)
+- Hotkey control via 3-key USB keyboard (trigger-happy)
+- Auto-start game via HID spacebar
+- **Result**: Scores 800–2500 with CSI camera at 60fps.
   See "Current Status" section below for details.
 
 ### Phase 3: Breakout/Pong (Mouse Game)
@@ -635,12 +686,12 @@ gameplayer-bot/
 - Test: Plays a browser-based Breakout/Pong game
 - Deliverable: Second game proving the platform is generic
 
-### Phase 4: Polish
-- `--autostart` tested and documented
+### Phase 4: Polish — IN PROGRESS
+- `--autostart` tested and working (boot mode with guided-roi + retries)
+- Hotkey control via 3-key USB keyboard (trigger-happy) — DONE
+- 60fps CSI camera with FPS-adaptive speed scaling — DONE
 - Game selection via `configs/game.ini`
-- Performance optimization (reduce CPU usage, lower power)
 - Pi Zero 2W testing (single cable mode)
-- CSI camera module testing (should give higher fps than USB)
 - Documentation and blog post
 
 ## Latency Analysis
@@ -657,15 +708,15 @@ gameplayer-bot/
 | USB poll interval (1ms for HID) | 0-1ms | 22-25ms |
 | **Total pipeline latency** | **~22-25ms** | |
 
-### Actual (CSI Camera — ov5647 at 32fps)
+### Actual (CSI Camera — ov5647 at 60fps)
 
 | Stage | Duration | Cumulative |
 |---|---|---|
-| Frame capture (32fps CSI via picamera2) | 31ms | 31ms |
-| ROI crop | <1ms | 32ms |
-| GaussianBlur + absdiff + threshold | ~2ms | 34ms |
-| Decision + HID write | <1ms | 35ms |
-| **Total pipeline latency** | **~31-35ms** | |
+| Frame capture (60fps CSI via picamera2) | 16ms | 16ms |
+| ROI crop | <1ms | 17ms |
+| GaussianBlur + absdiff + threshold | ~2ms | 19ms |
+| Decision + HID write | <1ms | 20ms |
+| **Total pipeline latency** | **~16-20ms** | |
 
 ### Actual (USB Camera — Logitech Brio at 15fps)
 
@@ -677,12 +728,12 @@ gameplayer-bot/
 | Decision + HID write | <1ms | 71ms |
 | **Total pipeline latency** | **~67-71ms** | |
 
-The CSI camera's 32fps (~31ms per frame) roughly halves the pipeline latency
-compared to the USB camera (15fps, ~67ms). This enables scores of 600-930
-with the Chrome Dino plugin.
+The CSI camera at 60fps (~16ms per frame) cuts pipeline latency to ~20ms,
+roughly 3.5x faster than the USB camera (15fps, ~67ms). This enables scores
+of 800-2500 with the Chrome Dino plugin.
 
 For mouse-based games (Breakout/Pong), continuous tracking means individual
-frame latency matters less — small dx corrections every 31ms should produce
+frame latency matters less — small dx corrections every 16ms should produce
 smooth paddle movement.
 
 ## Current Status & Results (March 2026)
@@ -690,10 +741,14 @@ smooth paddle movement.
 ### Chrome Dino — Working
 
 The bot reliably plays Chrome Dino in both day and night modes, scoring
-**600–930** with CSI camera at 32fps. Key improvements:
+**800–2500** with CSI camera at 60fps. Key improvements:
 
-- **CSI camera** (ov5647): 32fps vs USB camera's 15fps. Halved pipeline
-  latency enables higher scores and better reaction time.
+- **60fps CSI camera** (ov5647): 60fps at 640×480 via picamera2/libcamera.
+  ~16ms frame interval for faster obstacle detection. Also tested at 30fps
+  with similar variance (both score 800-2500).
+- **FPS-adaptive speed constants**: Speed thresholds defined at 30fps
+  reference, automatically scaled by `30/fps` for any frame rate. Changing
+  `camera_fps` in `game.ini` requires no code changes.
 - **Guided ROI detection** (`--guided-roi`): User places a white Notepad
   window sized to match the game baseline. Camera detects the white
   rectangle and calculates ROI from game proportions. Most reliable method.
@@ -707,16 +762,25 @@ The bot reliably plays Chrome Dino in both day and night modes, scoring
   Jump strip moves further ahead at higher speeds (27% → 40%). One-way
   speed ratchet prevents drops during obstacle corruption.
 - **Centroid-based ptero detection**: Vertical centroid of motion
-  distinguishes floating pterodactyls (centroid <65%) from grounded
-  cactuses (centroid 81-87%). More robust than zone-based approach.
+  distinguishes floating pterodactyls (centroid <50%) from grounded
+  cactuses (centroid 81-87%). Low pteros (cy 55-65%) are jumped, not
+  ducked. Only medium/high pteros (cy <50%) trigger duck.
 - **Ptero early-warning suppression**: Tracks frames with elevated
-  floating motion to suppress premature jumps before ptero is confirmed.
+  floating motion (centroid <55%) to suppress premature jumps before
+  ptero is confirmed.
 - **Adaptive cooldown**: 350ms at slow speed → 100ms at max speed for
   closely-spaced obstacles at high speed.
 - **Day/night handling**: Works across day/night transitions when no
   obstacle is present during the brightness change.
 - **Scene change suppression**: Prevents false triggers during game-over
   and restart transitions (>15% of ROI pixels changed = scene change).
+- **Auto-start game**: Sends spacebar via HID before game loop begins,
+  eliminating manual step on host PC.
+- **Hotkey control**: 3-key USB keyboard for headless operation
+  (KEY_1=calibrate, KEY_2=start/restart, KEY_3=stop). KEY_2 kills any
+  existing game player and starts fresh, enabling restart after game-over.
+- **Optional autoloop** (`--autoloop`): Game pause/over detection with
+  auto speed reset. Disabled by default as it can cap scores (~700).
 
 Main failure modes at higher scores:
 - **Night-to-day transition with obstacle**: The brightness change during
@@ -757,18 +821,18 @@ sidesteps all these issues.
 | Duck zone limit | Top 40% (DY_END) | Avoids scrolling ground features at 40-50% |
 | Diff threshold | 30 brightness levels | Filters camera noise while catching obstacles |
 | Jump density | 8% of scan pixels | ROI-size-independent; works in day and night modes |
-| Ptero density | 2% of strip + centroid < 65% | Distinguishes floating ptero from grounded cactus |
-| Ptero early-warning | 0.5% density + centroid < 70% | Suppresses premature jumps for up to 4 frames |
+| Ptero density | 2% of strip + centroid < 50% | Only medium/high pteros ducked; low pteros jumped |
+| Ptero early-warning | 0.5% density + centroid < 55% | Suppresses premature jumps for up to 4 frames |
 | Cooldown | 350ms (slow) → 100ms (fast) | Adaptive; shorter at high speed for close obstacles |
-| Speed range | 2–20 px/frame | Measured via phase correlation, one-way ratchet |
+| Speed range | 2–20 px/frame (30fps ref) | Auto-scaled by 30/fps; at 60fps: 1–10 px/frame |
 | Scene change | 15% of ROI pixels | Suppresses triggers during game-over/restart |
 
 ### Hardware Performance
 
-- **CSI Camera**: RPi Camera Module v1 (ov5647) — 32fps at 640×480
+- **CSI Camera**: RPi Camera Module v1 (ov5647) — 60fps at 640×480 (~62.5fps measured)
 - **USB Camera**: Logitech Brio — 15fps (backup, used for initial development)
 - **Resolution**: 640×480
-- **Pipeline latency (CSI)**: ~33ms total (31ms capture + ~2ms CV)
+- **Pipeline latency (CSI)**: ~20ms total (16ms capture + ~2ms CV)
 - **Pipeline latency (USB)**: ~67–71ms total (dominated by frame capture interval)
 - **CV processing**: ~2ms (GaussianBlur + absdiff + threshold on ~390×80 ROI)
 
@@ -776,9 +840,13 @@ sidesteps all these issues.
 
 ### Completed
 
-- **CSI camera support** — RPi Camera Module v1 (ov5647) achieving 32fps
-  via picamera2/libcamera. 2x faster than USB camera (15fps), enabling
-  higher scores (400-619 vs 400-500 with USB).
+- **CSI camera support** — RPi Camera Module v1 (ov5647) achieving 60fps
+  via picamera2/libcamera (~62.5fps measured). ~4x faster than USB camera
+  (15fps), enabling scores of 800-2500.
+
+- **60fps support** — Camera runs at 60fps. Speed constants and autoloop
+  thresholds are FPS-adaptive (defined at 30fps reference, scaled by
+  `30/fps`). Changing `camera_fps` in `game.ini` requires no code changes.
 
 - **Guided ROI detection** — `--guided-roi` uses a white Notepad window
   as a visual reference. User sizes the Notepad to match the game baseline.
@@ -799,11 +867,12 @@ sidesteps all these issues.
   One-way speed ratchet prevents drops mid-game. Resets on game-over.
 
 - **Centroid-based ptero detection** — Vertical centroid distinguishes
-  floating pterodactyls (centroid <65%) from grounded cactuses (81-87%).
-  Replaced zone-based upper/lower approach which was fragile.
+  floating pterodactyls (centroid <50%) from grounded cactuses (81-87%).
+  Low pteros (cy 55-65%) are jumped; only medium/high pteros (cy <50%)
+  trigger duck. Replaced zone-based upper/lower approach.
 
 - **Ptero early-warning suppression** — Tracks frames with elevated
-  floating motion (>0.5%, centroid <70%) to suppress premature jumps
+  floating motion (>0.5%, centroid <55%) to suppress premature jumps
   for up to 4 frames before ptero is confirmed with full density.
 
 - **Adaptive cooldown** — 350ms at game start, 100ms at max speed.
@@ -811,6 +880,22 @@ sidesteps all these issues.
 
 - **Scene change detection** — Suppresses all triggers when >15% of ROI
   pixels change between frames (game-over/restart transitions).
+
+- **Auto-start game** — Sends spacebar via HID before game loop begins,
+  so the Chrome Dino game starts automatically without manual input.
+
+- **Hotkey control** — 3-key USB keyboard for headless operation via
+  trigger-happy (thd). KEY_1=calibrate ROI (LED blinks), KEY_2=start/restart
+  game player, KEY_3=stop. Scripts are repo-path-independent via
+  `/etc/gameplayer-bot.env`.
+
+- **Game pause/over detection** (`--autoloop`) — Tracks near-zero scroll
+  speed frames to detect game pause/over and auto-reset. Optional flag
+  because false triggers can cap scores (~700).
+
+- **USB HID gadget fixes** — Removed conflicting `dr_mode=host` overlays
+  from `config.txt`. Gadget script now checks UDC binding, not just
+  directory existence, and reconfigures if not properly bound.
 
 ### High Priority
 

@@ -1,7 +1,7 @@
 #!/bin/bash
-# gameplayer-bot: KEY_2 — start the game player.
+# gameplayer-bot: KEY_2 — start (or restart) the game player.
 # Waits for any running calibration to finish first.
-# Prevents duplicate instances.
+# If already running, kills the old process and starts fresh.
 
 source /etc/gameplayer-bot.env
 LOCK="/tmp/gp-calibrate.lock"
@@ -19,10 +19,10 @@ if [ -f "$LOCK" ]; then
     fi
 fi
 
-# Check if already running
-if pgrep -f "python3.*main\.py.*--camera" > /dev/null 2>&1; then
-    echo "gp-start: game player already running"
-    exit 0
+# Kill any existing game player (allows restart after game-over)
+if pkill -f "python3.*main\.py.*--camera" 2>/dev/null; then
+    echo "gp-start: stopped previous game player"
+    sleep 0.5
 fi
 
 echo "gp-start: starting game player..."
