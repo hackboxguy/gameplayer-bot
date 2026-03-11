@@ -129,14 +129,19 @@ sed "s|__REPO_DIR__|$SCRIPT_DIR|g" \
     > /etc/triggerhappy/triggers.d/gameplayer-bot.conf
 echo "  Installed trigger-happy config"
 
-# Ensure triggerhappy runs as root (needed for LED control and HID access)
-if [ -f /etc/default/triggerhappy ]; then
-    sed -i 's/^DAEMON_OPTS=.*/DAEMON_OPTS="--daemon --triggers \/etc\/triggerhappy\/triggers.d\/ --user root"/' \
-        /etc/default/triggerhappy
-fi
+# Ensure triggerhappy runs as root (needed for LED control and HID access).
+# The default service drops to 'nobody'. Override with a systemd drop-in.
+mkdir -p /etc/systemd/system/triggerhappy.service.d
+cat > /etc/systemd/system/triggerhappy.service.d/gameplayer-bot.conf << 'OVERRIDE'
+[Service]
+ExecStart=
+ExecStart=/usr/sbin/thd --triggers /etc/triggerhappy/triggers.d/ --socket /run/thd.socket --deviceglob /dev/input/event*
+OVERRIDE
+echo "  Configured triggerhappy to run as root"
 
+systemctl daemon-reload
 systemctl enable triggerhappy.service
-systemctl restart triggerhappy.service 2>/dev/null || true
+systemctl restart triggerhappy.service
 echo "  Enabled triggerhappy.service"
 
 echo "  Done."

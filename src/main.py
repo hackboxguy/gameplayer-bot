@@ -505,6 +505,11 @@ def run(cfg):
     plugin.calibrate(frame)
 
     x1, y1, x2, y2 = cfg.roi
+
+    # Send spacebar to start the game (Chrome Dino "Press space to play")
+    hid.send_key_tap(hid.KEY_SPACE, hold_ms=80)
+    time.sleep(0.5)
+
     print("gameplayer-bot: running (Ctrl+C to stop)")
 
     frame_count = 0
