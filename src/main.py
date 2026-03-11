@@ -31,11 +31,9 @@ def load_plugin(name):
     if name == "chrome-dino":
         from plugins.chrome_dino import ChromeDinoPlugin
         return ChromeDinoPlugin()
-    elif name == "breakout":
-        from plugins.breakout import BreakoutPlugin
-        return BreakoutPlugin()
     else:
         print(f"Unknown plugin: {name}")
+        print("Available plugins: chrome-dino")
         sys.exit(1)
 
 
@@ -506,8 +504,8 @@ def run(cfg):
 
     x1, y1, x2, y2 = cfg.roi
 
-    # Send spacebar to start the game (Chrome Dino "Press space to play")
-    hid.send_key_tap(hid.KEY_SPACE, hold_ms=80)
+    # Let the plugin send its startup action (e.g. spacebar for Chrome Dino)
+    plugin.on_start(hid)
     time.sleep(0.5)
 
     print("gameplayer-bot: running (Ctrl+C to stop)")

@@ -96,8 +96,10 @@ systemctl daemon-reload
 systemctl enable gameplayer-bot-gadget.service
 echo "  Enabled gameplayer-bot-gadget.service"
 
-# Game player systemd service
-cp "$SCRIPT_DIR/configs/gameplayer-bot.service" /etc/systemd/system/
+# Game player systemd service (substitute repo path)
+sed "s|__REPO_DIR__|$SCRIPT_DIR|g" \
+    "$SCRIPT_DIR/configs/gameplayer-bot.service" \
+    > /etc/systemd/system/gameplayer-bot.service
 systemctl daemon-reload
 
 if [ "$AUTOSTART" -eq 1 ]; then

@@ -7,7 +7,6 @@ set -e
 source /etc/gameplayer-bot.env
 LED="/sys/class/leds/ACT"
 LOCK="/tmp/gp-calibrate.lock"
-CALIBRATED="/tmp/gp-calibrated"
 
 # Prevent concurrent runs
 if [ -f "$LOCK" ]; then
@@ -36,7 +35,6 @@ echo "gp-calibrate: starting guided ROI calibration..."
 
 # Run guided-roi
 if python3 "$REPO_DIR/src/main.py" --guided-roi --camera csi; then
-    touch "$CALIBRATED"
     echo "gp-calibrate: calibration successful"
 else
     echo "gp-calibrate: calibration failed"

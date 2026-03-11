@@ -365,8 +365,8 @@ Requires=gameplayer-bot-gadget.service
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/bin/python3 /home/pi/gameplayer-bot/src/main.py --boot --camera csi
-WorkingDirectory=/home/pi/gameplayer-bot
+ExecStart=/usr/bin/python3 __REPO_DIR__/src/main.py --boot --camera csi
+WorkingDirectory=__REPO_DIR__
 Restart=on-failure
 RestartSec=10
 
@@ -445,7 +445,7 @@ class GamePlugin:
     """Base class for game plugins."""
 
     name: str = "unnamed"
-    hid_type: str = "keyboard"  # "keyboard", "mouse", or "both"
+    hid_type: str = "keyboard"  # "keyboard" or "mouse"
 
     def calibrate(self, frame):
         """One-time setup: find game area, detect theme, etc."""
@@ -517,7 +517,6 @@ JX_MAX = 0.40        # jump strip start at maximum speed
 JX_WIDTH = 0.06      # jump strip width (constant)
 DX_START = 0.20      # duck strip start (fixed, wide)
 DX_END = 0.45        # duck strip end (fixed, wide)
-DY_END = 0.40        # duck zone vertical limit (top 40% of ROI only)
 # Speed thresholds defined at 30fps reference, auto-scaled for other fps:
 SPEED_MIN_30 = 2.0   # px/frame at game start (30fps reference)
 SPEED_MAX_30 = 20.0  # px/frame at high speed (30fps reference)
@@ -539,37 +538,10 @@ PTERO_EARLY_CENTROID = 0.55  # early-warning: < 55% = suspect ptero
 - **Very high-flying pterodactyl**: Ptero at the very top of the ROI may
   not accumulate enough density in the wide strip for confirmed detection.
 
-### Plugin: Breakout / Pong (Paddle Game)
+### Plugin: Breakout / Pong (Planned)
 
-```python
-class BreakoutPlugin(GamePlugin):
-    name = "breakout"
-    hid_type = "mouse"
-
-    def detect(self, frame):
-        roi = frame[y1:y2, x1:x2]
-        hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
-
-        mask = cv2.inRange(hsv, ball_lower, ball_upper)
-        contours, _ = cv2.findContours(mask, ...)
-        if contours:
-            ball = max(contours, key=cv2.contourArea)
-            M = cv2.moments(ball)
-            bx = int(M["m10"] / M["m00"])
-            by = int(M["m01"] / M["m00"])
-            return {"ball_x": bx, "ball_y": by, "found": True}
-        return {"found": False}
-
-    def decide(self, state):
-        if not state["found"]:
-            return {"dx": 0}
-        dx = state["ball_x"] - self.last_paddle_x
-        dx = max(-127, min(127, dx))
-        return {"dx": dx}
-
-    def get_hid_report(self, action):
-        return mouse_report(dx=action["dx"], dy=0)
-```
+Not yet implemented. Would use ball tracking via color/contour detection and
+mouse HID for paddle movement. See Phase 3 below.
 
 ## Configuration
 
@@ -577,7 +549,7 @@ class BreakoutPlugin(GamePlugin):
 
 ```ini
 [general]
-# Which game plugin to load: chrome-dino, breakout
+# Which game plugin to load: chrome-dino
 plugin = chrome-dino
 
 # Camera type: auto, csi, usb, dummy
@@ -599,28 +571,11 @@ x1 = 140
 y1 = 130
 x2 = 530
 y2 = 210
-
-[chrome-dino]
-# Pixel sum threshold to consider an obstacle detected in a zone
-# Higher values = less sensitive (fewer false jumps from camera noise)
-# Scale this up if the ROI is larger (more pixels in scan zone)
-trigger_threshold = 300
-# Pixel sum threshold for pterodactyl detection in upper zone
-# Lower than trigger_threshold because ptero motion is smaller
-duck_threshold = 90
-# Cooldown between actions (ms) — must be long enough to avoid
-# re-jumping on the same obstacle as it scrolls through
-cooldown_ms = 350
-
-[breakout]
-# Ball color range in HSV (tune for your specific game)
-ball_h_min = 0
-ball_h_max = 180
-ball_s_min = 50
-ball_s_max = 255
-ball_v_min = 50
-ball_v_max = 255
 ```
+
+Chrome Dino detection parameters are hardcoded as density-based constants in
+the plugin (see "Key Parameters" section above). They are ROI-size-independent
+and do not require per-installation tuning.
 
 ## Project Structure
 
@@ -648,12 +603,9 @@ gameplayer-bot/
 │   └── plugins/
 │       ├── __init__.py
 │       ├── base.py                   GamePlugin base class
-│       ├── chrome_dino.py            Chrome Dino: jump/duck via keyboard
-│       └── breakout.py               Breakout/Pong: paddle via mouse
+│       └── chrome_dino.py            Chrome Dino: jump/duck via keyboard
 └── tests/
-    ├── test_hid.py                   Verify HID reports
-    ├── test_plugins.py               Test detection with sample frames
-    └── sample_frames/                Screenshots for offline testing
+    └── sample_frames/                Debug images from calibration/detection
 ```
 
 ## Development Phases
@@ -818,7 +770,6 @@ sidesteps all these issues.
 | Jump strip | 27–40% adaptive + 6% width | Shifts right at higher speed for more lead time |
 | Duck strip | 20–45% of ROI width | Wide strip for centroid-based ptero detection |
 | Ground split | 50% of ROI height | Jump scan uses lower half only |
-| Duck zone limit | Top 40% (DY_END) | Avoids scrolling ground features at 40-50% |
 | Diff threshold | 30 brightness levels | Filters camera noise while catching obstacles |
 | Jump density | 8% of scan pixels | ROI-size-independent; works in day and night modes |
 | Ptero density | 2% of strip + centroid < 50% | Only medium/high pteros ducked; low pteros jumped |

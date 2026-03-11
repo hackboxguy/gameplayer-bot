@@ -228,7 +228,7 @@ The plugin architecture makes it straightforward to add new games. Each plugin i
 ```python
 class MyGamePlugin(GamePlugin):
     name = "my-game"
-    hid_type = "keyboard"  # or "mouse" or "both"
+    hid_type = "keyboard"  # or "mouse"
 
     def detect(self, frame) -> dict:
         # CV logic: analyze the ROI frame, return game state

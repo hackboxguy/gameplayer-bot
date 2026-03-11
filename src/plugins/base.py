@@ -11,7 +11,7 @@ class GamePlugin:
 
     Attributes:
         name: Plugin identifier (matches config section name).
-        hid_type: Which HID device to use: "keyboard", "mouse", or "both".
+        hid_type: Which HID device to use: "keyboard" or "mouse".
     """
 
     name = "unnamed"
@@ -21,6 +21,14 @@ class GamePlugin:
         """Called once at startup with the Config object.
 
         Override to read plugin-specific settings from game.ini.
+        """
+        pass
+
+    def on_start(self, hid):
+        """Called once before the game loop starts.
+
+        Override to send startup input (e.g. spacebar to begin the game).
+        Default is no-op.
         """
         pass
 

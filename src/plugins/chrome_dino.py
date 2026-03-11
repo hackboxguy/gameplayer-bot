@@ -36,7 +36,6 @@ class ChromeDinoPlugin(GamePlugin):
     JX_WIDTH = 0.06      # jump strip width (constant)
     DX_START = 0.20      # duck strip start (fixed, wide)
     DX_END = 0.45        # duck strip end (fixed, wide)
-    DY_END = 0.40        # duck zone vertical limit (top 40% of ROI only)
     # Speed thresholds defined at 30fps reference rate (px/frame).
     # Automatically scaled by _fps_scale in setup() for other frame rates.
     SPEED_MIN_30 = 2.0    # px/frame at game start (30fps reference)
@@ -45,10 +44,11 @@ class ChromeDinoPlugin(GamePlugin):
     COOLDOWN_MIN_MS = 100  # minimum cooldown at max speed
     COOLDOWN_MAX_MS = 350  # maximum cooldown at min speed
 
+    def on_start(self, hid):
+        """Send spacebar to start the Chrome Dino game."""
+        hid.send_key_tap(hid.KEY_SPACE, hold_ms=80)
+
     def __init__(self):
-        self._trigger_threshold = 500
-        self._duck_threshold = 90
-        self._cooldown_ms = 300
         self._last_action_time = 0
         self._last_action = "none"
         self._key_held = False
@@ -59,28 +59,21 @@ class ChromeDinoPlugin(GamePlugin):
         self._peak_lower = 0
         self._peak_upper = 0
         self._peak_mr = 0.0
-        self._peak_ignore = 0
         self._peak_speed = 0.0
         self._ptero_suspect = 0   # frames of early ptero warning
         self._zero_speed_frames = 0  # consecutive frames with near-zero scroll
         self._game_paused = False    # True when game is paused/game-over
 
     def setup(self, config):
-        self._trigger_threshold = config.getint(
-            "chrome-dino", "trigger_threshold", fallback=500
-        )
-        self._duck_threshold = config.getint(
-            "chrome-dino", "duck_threshold", fallback=90
-        )
-        self._cooldown_ms = config.getint(
-            "chrome-dino", "cooldown_ms", fallback=300
-        )
         self._autoloop = getattr(config, 'autoloop', False)
 
         # Scale speed constants based on configured fps.
         # Phase correlation gives px/frame, so at higher fps each frame
         # has proportionally less shift. Scale factor = 30 / actual_fps.
         fps = getattr(config, 'camera_fps', 30)
+        if fps < 1:
+            print(f"WARNING: camera_fps={fps} invalid, defaulting to 30")
+            fps = 30
         self._fps_scale = 30.0 / fps
         self.SPEED_MIN = self.SPEED_MIN_30 * self._fps_scale
         self.SPEED_MAX = self.SPEED_MAX_30 * self._fps_scale
@@ -175,7 +168,6 @@ class ChromeDinoPlugin(GamePlugin):
         jx_end = int(w * (jx_pct + self.JX_WIDTH))
         dx_start = int(w * self.DX_START)
         dx_end = int(w * self.DX_END)
-        dy_end = int(h * self.DY_END)   # duck zone top portion only
         y_ground = int(h * 0.50)
 
         # Check for scene-wide change (game over, restart, etc.)
@@ -263,7 +255,6 @@ class ChromeDinoPlugin(GamePlugin):
         self._peak_lower = max(self._peak_lower, scan_density)
         self._peak_upper = max(self._peak_upper, full_density)
         self._peak_mr = max(self._peak_mr, motion_ratio)
-        self._peak_ignore = 0
         self._peak_speed = max(self._peak_speed, self._speed)
 
         # Debug stats
