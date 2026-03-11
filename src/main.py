@@ -470,10 +470,31 @@ def run(cfg):
     """Main game loop."""
     from camera import create_camera
 
+    # Validate config before starting
+    x1, y1, x2, y2 = cfg.roi
+    cam_w, cam_h = cfg.camera_width, cfg.camera_height
+    errors = []
+    if cfg.camera_fps < 1:
+        errors.append(f"camera_fps={cfg.camera_fps} must be >= 1")
+    if x1 >= x2:
+        errors.append(f"ROI x1={x1} must be less than x2={x2}")
+    if y1 >= y2:
+        errors.append(f"ROI y1={y1} must be less than y2={y2}")
+    if x2 > cam_w or y2 > cam_h:
+        errors.append(f"ROI ({x1},{y1})-({x2},{y2}) exceeds camera frame {cam_w}x{cam_h}")
+    if (x2 - x1) < 20 or (y2 - y1) < 10:
+        errors.append(f"ROI too small: {x2-x1}x{y2-y1} (minimum 20x10)")
+    if errors:
+        print("ERROR: invalid configuration:")
+        for e in errors:
+            print(f"  - {e}")
+        print("Fix configs/game.ini or re-run --guided-roi / --auto-roi")
+        sys.exit(1)
+
     plugin_name = cfg.plugin_name
     print(f"gameplayer-bot: starting with plugin '{plugin_name}'")
-    print(f"Camera: {cfg.camera_type} {cfg.camera_width}x{cfg.camera_height} @ {cfg.camera_fps}fps")
-    print(f"ROI: {cfg.roi}")
+    print(f"Camera: {cfg.camera_type} {cam_w}x{cam_h} @ {cfg.camera_fps}fps")
+    print(f"ROI: ({x1},{y1})-({x2},{y2}) [{x2-x1}x{y2-y1}]")
 
     # Load plugin
     plugin = load_plugin(plugin_name)
@@ -501,8 +522,6 @@ def run(cfg):
     # Calibrate with first frame
     frame = cam.capture()
     plugin.calibrate(frame)
-
-    x1, y1, x2, y2 = cfg.roi
 
     # Let the plugin send its startup action (e.g. spacebar for Chrome Dino)
     plugin.on_start(hid)
@@ -613,7 +632,7 @@ def boot(cfg, delay):
 
     # Enter game loop
     print("\ngameplayer-bot: starting game loop")
-    print("  Remove Notepad from screen, then press spacebar to start the game.")
+    print("  Remove Notepad from screen — the game will start automatically.")
     run(cfg)
 
 

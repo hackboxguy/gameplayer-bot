@@ -151,7 +151,7 @@ since there is no manual calibration step.
 sudo ./setup.sh --autostart
 ```
 
-Boot sequence: Pi boots → detects Notepad (retries for up to 2 min) → calculates ROI → enters game loop. Remove the Notepad after the LED stops blinking, then press spacebar on the host PC to start the game.
+Boot sequence: Pi boots → detects Notepad (retries for up to 2 min) → calculates ROI → sends spacebar to start the game → plays automatically. Remove the Notepad after the LED stops blinking.
 
 ## Configuration
 
