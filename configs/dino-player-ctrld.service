@@ -1,0 +1,13 @@
+[Unit]
+Description=gameplayer-bot controller daemon (Pi Zero 2W)
+After=gameplayer-bot-gadget.service
+Wants=gameplayer-bot-gadget.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 __REPO_DIR__/src/ctrld.py --camera csi --boot-delay 15
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

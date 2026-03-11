@@ -121,8 +121,7 @@ fi
 
 echo "  Done."
 
-# ---- 4. Install hotkey support (trigger-happy) ----
-echo "[4/5] Installing hotkey support..."
+# ---- 4. Install control layer (hotkeys or ctrld) ----
 
 # Save repo path and hardware type for scripts to source at runtime
 ENV_FILE="$SCRIPT_DIR/gameplayer-bot.env"
@@ -138,33 +137,57 @@ if [ "$HW_TYPE" = "pi02" ]; then
     echo "  Set camera_fps = 30 for Pi Zero 2W"
 fi
 
-# Make scripts executable
-chmod +x "$SCRIPT_DIR/scripts/gp-calibrate.sh"
-chmod +x "$SCRIPT_DIR/scripts/gp-start.sh"
-chmod +x "$SCRIPT_DIR/scripts/gp-stop.sh"
+if [ "$HW_TYPE" = "pi02" ]; then
+    # --- Pi Zero 2W: install dino-player-ctrld (no USB host for keyboard) ---
+    echo "[4/5] Installing dino-player-ctrld (Pi Zero 2W headless mode)..."
 
-# Generate triggers config with actual repo path
-sed "s|__REPO_DIR__|$SCRIPT_DIR|g" \
-    "$SCRIPT_DIR/configs/gameplayer-bot.triggers" \
-    > /etc/triggerhappy/triggers.d/gameplayer-bot.conf
-echo "  Installed trigger-happy config"
+    # Disable trigger-happy if it was previously installed
+    systemctl disable triggerhappy.service 2>/dev/null || true
 
-# Ensure triggerhappy runs as root (needed for LED control and HID access).
-# The default service drops to 'nobody'. Override with a systemd drop-in.
-mkdir -p /etc/systemd/system/triggerhappy.service.d
-cat > /etc/systemd/system/triggerhappy.service.d/gameplayer-bot.conf << 'OVERRIDE'
+    # Install ctrld systemd service (substitute repo path)
+    sed "s|__REPO_DIR__|$SCRIPT_DIR|g" \
+        "$SCRIPT_DIR/configs/dino-player-ctrld.service" \
+        > /etc/systemd/system/dino-player-ctrld.service
+    systemctl daemon-reload
+    systemctl enable dino-player-ctrld.service
+    echo "  Enabled dino-player-ctrld.service"
+
+    echo "  Done."
+else
+    # --- Pi 4 / Pi 5: install trigger-happy hotkeys ---
+    echo "[4/5] Installing hotkey support..."
+
+    # Disable ctrld if it was previously installed
+    systemctl disable dino-player-ctrld.service 2>/dev/null || true
+
+    # Make scripts executable
+    chmod +x "$SCRIPT_DIR/scripts/gp-calibrate.sh"
+    chmod +x "$SCRIPT_DIR/scripts/gp-start.sh"
+    chmod +x "$SCRIPT_DIR/scripts/gp-stop.sh"
+
+    # Generate triggers config with actual repo path
+    sed "s|__REPO_DIR__|$SCRIPT_DIR|g" \
+        "$SCRIPT_DIR/configs/gameplayer-bot.triggers" \
+        > /etc/triggerhappy/triggers.d/gameplayer-bot.conf
+    echo "  Installed trigger-happy config"
+
+    # Ensure triggerhappy runs as root (needed for LED control and HID access).
+    # The default service drops to 'nobody'. Override with a systemd drop-in.
+    mkdir -p /etc/systemd/system/triggerhappy.service.d
+    cat > /etc/systemd/system/triggerhappy.service.d/gameplayer-bot.conf << 'OVERRIDE'
 [Service]
 ExecStart=
 ExecStart=/usr/sbin/thd --triggers /etc/triggerhappy/triggers.d/ --socket /run/thd.socket --deviceglob /dev/input/event*
 OVERRIDE
-echo "  Configured triggerhappy to run as root"
+    echo "  Configured triggerhappy to run as root"
 
-systemctl daemon-reload
-systemctl enable triggerhappy.service
-systemctl restart triggerhappy.service
-echo "  Enabled triggerhappy.service"
+    systemctl daemon-reload
+    systemctl enable triggerhappy.service
+    systemctl restart triggerhappy.service
+    echo "  Enabled triggerhappy.service"
 
-echo "  Done."
+    echo "  Done."
+fi
 
 # ---- 5. Summary ----
 echo ""
@@ -179,35 +202,53 @@ echo ""
 echo "  Test HID output (no camera needed):"
 echo "    sudo python3 $SCRIPT_DIR/src/main.py --test-hid"
 echo ""
-echo "  Manual operation:"
-echo "    sudo python3 $SCRIPT_DIR/src/main.py --guided-roi --camera csi"
-echo "    sudo python3 $SCRIPT_DIR/src/main.py --camera csi"
-echo ""
-echo "  View logs:"
-echo "    journalctl -u gameplayer-bot -f"
-echo ""
-echo "  Hotkeys (3-key USB keyboard):"
-echo "    KEY_1: Calibrate ROI (LED blinks during calibration)"
-echo "    KEY_2: Start game player"
-echo "    KEY_3: Stop game player"
-echo ""
-if [ "$AUTOSTART" -eq 1 ]; then
-    echo "  AUTO-START ENABLED (--boot mode with CSI camera)"
-    echo ""
-    echo "  Boot workflow:"
+
+if [ "$HW_TYPE" = "pi02" ]; then
+    echo "  Pi Zero 2W headless workflow:"
     echo "    1. Open Chrome Dino game on host PC"
     echo "    2. Place a white Notepad window over the game baseline"
     echo "    3. Power on the Pi (camera facing the screen)"
-    echo "    4. Wait ~30s for Pi to boot and detect the Notepad (ROI calibration)"
-    echo "    5. Remove the Notepad window"
-    echo "    6. Pi sends spacebar and starts playing automatically"
+    echo "    4. Wait for LED to blink (ROI calibration in progress)"
+    echo "    5. When LED stops blinking, remove the Notepad window"
+    echo "    6. Pi starts playing automatically; restarts on game-over"
+    echo "    7. To stop: place Notepad back over the game area"
+    echo ""
+    echo "  View logs:"
+    echo "    journalctl -u dino-player-ctrld -f"
     echo ""
     echo "  To disable auto-start:"
-    echo "    sudo systemctl disable gameplayer-bot"
+    echo "    sudo systemctl disable dino-player-ctrld"
 else
-    echo "  Start game player manually:"
-    echo "    sudo systemctl start gameplayer-bot"
+    echo "  Manual operation:"
+    echo "    sudo python3 $SCRIPT_DIR/src/main.py --guided-roi --camera csi"
+    echo "    sudo python3 $SCRIPT_DIR/src/main.py --camera csi"
     echo ""
-    echo "  To enable auto-start (boot mode):"
-    echo "    sudo systemctl enable gameplayer-bot"
+    echo "  View logs:"
+    echo "    journalctl -u gameplayer-bot -f"
+    echo ""
+    echo "  Hotkeys (3-key USB keyboard):"
+    echo "    KEY_1: Calibrate ROI (LED blinks during calibration)"
+    echo "    KEY_2: Start game player"
+    echo "    KEY_3: Stop game player"
+    echo ""
+    if [ "$AUTOSTART" -eq 1 ]; then
+        echo "  AUTO-START ENABLED (--boot mode with CSI camera)"
+        echo ""
+        echo "  Boot workflow:"
+        echo "    1. Open Chrome Dino game on host PC"
+        echo "    2. Place a white Notepad window over the game baseline"
+        echo "    3. Power on the Pi (camera facing the screen)"
+        echo "    4. Wait ~30s for Pi to boot and detect the Notepad (ROI calibration)"
+        echo "    5. Remove the Notepad window"
+        echo "    6. Pi sends spacebar and starts playing automatically"
+        echo ""
+        echo "  To disable auto-start:"
+        echo "    sudo systemctl disable gameplayer-bot"
+    else
+        echo "  Start game player manually:"
+        echo "    sudo systemctl start gameplayer-bot"
+        echo ""
+        echo "  To enable auto-start (boot mode):"
+        echo "    sudo systemctl enable gameplayer-bot"
+    fi
 fi

@@ -466,6 +466,18 @@ def guided_roi(cfg):
     return True
 
 
+STATE_FILE = "/tmp/gp-state"
+
+
+def _write_state(state):
+    """Write game state to file for external monitoring (e.g. dino-player-ctrld)."""
+    try:
+        with open(STATE_FILE, "w") as f:
+            f.write(state)
+    except OSError:
+        pass
+
+
 def run(cfg):
     """Main game loop."""
     from camera import create_camera
@@ -527,10 +539,12 @@ def run(cfg):
     plugin.on_start(hid)
     time.sleep(0.5)
 
+    _write_state("playing")
     print("gameplayer-bot: running (Ctrl+C to stop)")
 
     frame_count = 0
     start_time = time.time()
+    prev_paused = False
 
     try:
         while True:
@@ -542,6 +556,12 @@ def run(cfg):
             # Plugin pipeline: detect -> decide -> act
             state = plugin.detect(roi)
             action = plugin.decide(state)
+
+            # Write state file on game_paused transitions
+            paused_now = state.get('game_paused', False)
+            if paused_now != prev_paused:
+                _write_state("game_over" if paused_now else "playing")
+                prev_paused = paused_now
             report = plugin.get_hid_report(action)
 
             # Send HID report
@@ -592,6 +612,8 @@ def run(cfg):
         except (OSError, IOError):
             pass
         cam.stop()
+        _write_state("stopped")
+
 
 
 def boot(cfg, delay):
