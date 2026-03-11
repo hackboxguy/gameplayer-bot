@@ -4,6 +4,9 @@ A Raspberry Pi that watches your screen with a camera, detects game state using 
 
 Currently plays **Chrome Dino** (scores 800–2500), with a plugin architecture ready for other games.
 
+> [!IMPORTANT]
+> **Current status:** Chrome Dino only. Additional game plugins (e.g. Breakout/Pong) are planned but not yet implemented.
+
 > [!NOTE]
 > This is the V2 evolution of the [ATtiny85-based Chrome Dino player](https://github.com/hackboxguy/chrome-dinoplayer)
 > ([blog post](https://prolinix.com/blog/chrome-dino-auto-player/)), which used
@@ -129,6 +132,13 @@ With a 3-key USB mini keyboard plugged into the Pi, you can operate without SSH:
 ### Why Frame Differencing?
 
 A camera watching a screen is fundamentally different from reading pixels directly. Camera noise, auto-exposure shifts, and screen refresh artifacts make static thresholding unreliable. Frame differencing elegantly cancels all of this — only moving objects produce signal.
+
+## Use Cases Beyond Dino
+
+- USB HID gadget validation for Raspberry Pi projects
+- External-agent CV experiments for kiosk/air-gapped/locked-down hosts
+- Latency benchmarking for camera → CV → HID control loops
+- A reference implementation for plugin-based camera game automation
 
 ## Recommended Workflow
 
@@ -257,6 +267,13 @@ Set `plugin = my-game` in `configs/game.ini` and register it in `src/main.py`.
 | **HID output** | Keyboard only | Keyboard + mouse composite |
 | **Cost** | ~$5 | ~$50 |
 | **Score** | ~200-400 | 800-2500 |
+
+## Limitations
+
+- Only Chrome Dino is implemented; other game plugins are planned.
+- Requires physical setup (camera aim, monitor position, ROI calibration).
+- Camera-based detection is sensitive to reflections, motion blur, and lighting changes.
+- Known edge case: day/night transition with an obstacle present can cause a miss.
 
 ## Acknowledgments
 
