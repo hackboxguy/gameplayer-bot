@@ -2,22 +2,30 @@
 # gameplayer-bot setup script
 #
 # Installs dependencies, configures USB HID gadget, and installs systemd services.
-# Run from the repo root: sudo ./setup.sh [--autostart]
+# Run from the repo root: sudo ./setup.sh [--autostart] [--hw=pi02|pi4|pi5]
 #
 # Without --autostart: gadget service enabled (creates /dev/hidg0 + /dev/hidg1),
 #   but game player must be started manually: sudo systemctl start gameplayer-bot
 #
 # With --autostart: game player also starts automatically on boot.
+#
+# --hw=pi02: Pi Zero 2W (sets camera_fps=30, micro-USB OTG, 22-pin CSI)
+# --hw=pi4:  Raspberry Pi 4 (default, camera_fps=60)
+# --hw=pi5:  Raspberry Pi 5 (camera_fps=60)
+# No --hw:   defaults to pi4 behavior
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AUTOSTART=0
+HW_TYPE=""
 
 for arg in "$@"; do
     case "$arg" in
         --autostart) AUTOSTART=1 ;;
-        *) echo "Unknown option: $arg"; echo "Usage: sudo ./setup.sh [--autostart]"; exit 1 ;;
+        --hw=pi02|--hw=pi4|--hw=pi5) HW_TYPE="${arg#--hw=}" ;;
+        --hw=*) echo "Unknown hardware type: ${arg#--hw=}"; echo "Valid: pi02, pi4, pi5"; exit 1 ;;
+        *) echo "Unknown option: $arg"; echo "Usage: sudo ./setup.sh [--autostart] [--hw=pi02|pi4|pi5]"; exit 1 ;;
     esac
 done
 
@@ -116,9 +124,19 @@ echo "  Done."
 # ---- 4. Install hotkey support (trigger-happy) ----
 echo "[4/5] Installing hotkey support..."
 
-# Save repo path for scripts to source at runtime
-echo "REPO_DIR=\"$SCRIPT_DIR\"" > /etc/gameplayer-bot.env
-echo "  Created /etc/gameplayer-bot.env (REPO_DIR=$SCRIPT_DIR)"
+# Save repo path and hardware type for scripts to source at runtime
+ENV_FILE="$SCRIPT_DIR/gameplayer-bot.env"
+{
+    echo "REPO_DIR=\"$SCRIPT_DIR\""
+    echo "HW_TYPE=\"${HW_TYPE:-pi4}\""
+} > "$ENV_FILE"
+echo "  Created $ENV_FILE (REPO_DIR=$SCRIPT_DIR, HW_TYPE=${HW_TYPE:-pi4})"
+
+# Set camera_fps based on hardware type
+if [ "$HW_TYPE" = "pi02" ]; then
+    sed -i 's/^camera_fps = .*/camera_fps = 30/' "$SCRIPT_DIR/configs/game.ini"
+    echo "  Set camera_fps = 30 for Pi Zero 2W"
+fi
 
 # Make scripts executable
 chmod +x "$SCRIPT_DIR/scripts/gp-calibrate.sh"

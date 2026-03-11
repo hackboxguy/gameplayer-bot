@@ -3,7 +3,9 @@
 # Waits for any running calibration to finish first.
 # If already running, kills the old process and starts fresh.
 
-source /etc/gameplayer-bot.env
+# Derive env file path from this script's location
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$SCRIPT_DIR/gameplayer-bot.env"
 LOCK="/tmp/gp-calibrate.lock"
 
 # If calibration is running, wait for it (max 30s)

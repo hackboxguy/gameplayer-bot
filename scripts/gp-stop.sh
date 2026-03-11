@@ -11,6 +11,14 @@ fi
 # Clean up calibration lock if orphaned
 rm -f /tmp/gp-calibrate.lock
 
-# Restore LED to SD card activity
+# Restore LED to its original trigger (saved by gp-calibrate.sh)
 LED="/sys/class/leds/ACT"
-echo mmc0 > "$LED/trigger" 2>/dev/null || true
+LED_SAVE="/tmp/gp-led-trigger"
+if [ -f "$LED_SAVE" ]; then
+    echo "$(cat "$LED_SAVE")" > "$LED/trigger" 2>/dev/null || true
+    rm -f "$LED_SAVE"
+else
+    # No saved trigger — try common default
+    echo mmc0 > "$LED/trigger" 2>/dev/null || \
+    echo default-on > "$LED/trigger" 2>/dev/null || true
+fi

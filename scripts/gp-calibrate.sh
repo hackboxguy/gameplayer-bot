@@ -1,12 +1,15 @@
 #!/bin/bash
 # gameplayer-bot: KEY_1 — run guided ROI calibration with LED feedback.
-# Blinks the Pi4 green ACT LED during calibration, restores on completion.
+# Blinks the Pi green ACT LED during calibration, restores on completion.
 
 set -e
 
-source /etc/gameplayer-bot.env
+# Derive env file path from this script's location
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+source "$SCRIPT_DIR/gameplayer-bot.env"
 LED="/sys/class/leds/ACT"
 LOCK="/tmp/gp-calibrate.lock"
+LED_SAVE="/tmp/gp-led-trigger"
 
 # Prevent concurrent runs
 if [ -f "$LOCK" ]; then
@@ -15,9 +18,18 @@ if [ -f "$LOCK" ]; then
 fi
 touch "$LOCK"
 
+# Save the current LED trigger before we change it
+if [ -f "$LED/trigger" ]; then
+    # Extract the active trigger (shown in [brackets])
+    sed -n 's/.*\[\(.*\)\].*/\1/p' "$LED/trigger" > "$LED_SAVE"
+fi
+
 cleanup() {
-    # Restore LED to SD card activity
-    echo mmc0 > "$LED/trigger" 2>/dev/null || true
+    # Restore LED to its original trigger
+    if [ -f "$LED_SAVE" ]; then
+        echo "$(cat "$LED_SAVE")" > "$LED/trigger" 2>/dev/null || true
+        rm -f "$LED_SAVE"
+    fi
     rm -f "$LOCK"
 }
 trap cleanup EXIT
