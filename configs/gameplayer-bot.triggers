@@ -1,0 +1,8 @@
+# gameplayer-bot trigger-happy hotkey config
+# Installed by setup.sh — paths are filled in at install time.
+# KEY_1: Guided ROI calibration (blinks LED)
+# KEY_2: Start game player
+# KEY_3: Stop game player
+KEY_1	1	__REPO_DIR__/scripts/gp-calibrate.sh
+KEY_2	1	__REPO_DIR__/scripts/gp-start.sh
+KEY_3	1	__REPO_DIR__/scripts/gp-stop.sh

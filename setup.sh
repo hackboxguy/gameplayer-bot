@@ -32,17 +32,18 @@ echo "Repo: $SCRIPT_DIR"
 echo ""
 
 # ---- 1. Install system dependencies ----
-echo "[1/4] Installing system dependencies..."
+echo "[1/5] Installing system dependencies..."
 apt-get update -qq
 apt-get install -y --no-install-recommends \
     python3-opencv \
     python3-picamera2 \
     python3-numpy \
-    python3-libcamera
+    python3-libcamera \
+    triggerhappy
 echo "  Done."
 
 # ---- 2. Configure boot for USB gadget mode ----
-echo "[2/4] Configuring USB gadget mode..."
+echo "[2/5] Configuring USB gadget mode..."
 
 CONFIG_TXT="/boot/firmware/config.txt"
 MODULES_FILE="/etc/modules"
@@ -82,7 +83,7 @@ fi
 echo "  Done."
 
 # ---- 3. Install gadget setup script and services ----
-echo "[3/4] Installing services..."
+echo "[3/5] Installing services..."
 
 # Gadget setup script
 cp "$SCRIPT_DIR/configs/setup-gadget.sh" /usr/local/bin/gameplayer-bot-gadget.sh
@@ -110,9 +111,39 @@ fi
 
 echo "  Done."
 
-# ---- 4. Summary ----
+# ---- 4. Install hotkey support (trigger-happy) ----
+echo "[4/5] Installing hotkey support..."
+
+# Save repo path for scripts to source at runtime
+echo "REPO_DIR=\"$SCRIPT_DIR\"" > /etc/gameplayer-bot.env
+echo "  Created /etc/gameplayer-bot.env (REPO_DIR=$SCRIPT_DIR)"
+
+# Make scripts executable
+chmod +x "$SCRIPT_DIR/scripts/gp-calibrate.sh"
+chmod +x "$SCRIPT_DIR/scripts/gp-start.sh"
+chmod +x "$SCRIPT_DIR/scripts/gp-stop.sh"
+
+# Generate triggers config with actual repo path
+sed "s|__REPO_DIR__|$SCRIPT_DIR|g" \
+    "$SCRIPT_DIR/configs/gameplayer-bot.triggers" \
+    > /etc/triggerhappy/triggers.d/gameplayer-bot.conf
+echo "  Installed trigger-happy config"
+
+# Ensure triggerhappy runs as root (needed for LED control and HID access)
+if [ -f /etc/default/triggerhappy ]; then
+    sed -i 's/^DAEMON_OPTS=.*/DAEMON_OPTS="--daemon --triggers \/etc\/triggerhappy\/triggers.d\/ --user root"/' \
+        /etc/default/triggerhappy
+fi
+
+systemctl enable triggerhappy.service
+systemctl restart triggerhappy.service 2>/dev/null || true
+echo "  Enabled triggerhappy.service"
+
+echo "  Done."
+
+# ---- 5. Summary ----
 echo ""
-echo "[4/4] Setup complete!"
+echo "[5/5] Setup complete!"
 echo ""
 echo "  REBOOT REQUIRED for USB gadget mode to take effect."
 echo ""
@@ -129,6 +160,11 @@ echo "    sudo python3 $SCRIPT_DIR/src/main.py --camera csi"
 echo ""
 echo "  View logs:"
 echo "    journalctl -u gameplayer-bot -f"
+echo ""
+echo "  Hotkeys (3-key USB keyboard):"
+echo "    KEY_1: Calibrate ROI (LED blinks during calibration)"
+echo "    KEY_2: Start game player"
+echo "    KEY_3: Stop game player"
 echo ""
 if [ "$AUTOSTART" -eq 1 ]; then
     echo "  AUTO-START ENABLED (--boot mode with CSI camera)"

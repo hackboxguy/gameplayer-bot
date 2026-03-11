@@ -37,8 +37,10 @@ class ChromeDinoPlugin(GamePlugin):
     DX_START = 0.20      # duck strip start (fixed, wide)
     DX_END = 0.45        # duck strip end (fixed, wide)
     DY_END = 0.40        # duck zone vertical limit (top 40% of ROI only)
-    SPEED_MIN = 2.0      # px/frame at game start
-    SPEED_MAX = 20.0     # px/frame at high speed (~600+ score)
+    # Speed thresholds defined at 30fps reference rate (px/frame).
+    # Automatically scaled by _fps_scale in setup() for other frame rates.
+    SPEED_MIN_30 = 2.0    # px/frame at game start (30fps reference)
+    SPEED_MAX_30 = 20.0   # px/frame at high speed (30fps reference)
     # Adaptive cooldown: shorter at higher speeds for closely-spaced obstacles
     COOLDOWN_MIN_MS = 100  # minimum cooldown at max speed
     COOLDOWN_MAX_MS = 350  # maximum cooldown at min speed
@@ -74,6 +76,14 @@ class ChromeDinoPlugin(GamePlugin):
             "chrome-dino", "cooldown_ms", fallback=300
         )
         self._autoloop = getattr(config, 'autoloop', False)
+
+        # Scale speed constants based on configured fps.
+        # Phase correlation gives px/frame, so at higher fps each frame
+        # has proportionally less shift. Scale factor = 30 / actual_fps.
+        fps = getattr(config, 'camera_fps', 30)
+        self._fps_scale = 30.0 / fps
+        self.SPEED_MIN = self.SPEED_MIN_30 * self._fps_scale
+        self.SPEED_MAX = self.SPEED_MAX_30 * self._fps_scale
 
     def calibrate(self, frame):
         os.makedirs(DEBUG_DIR, exist_ok=True)
@@ -123,7 +133,7 @@ class ChromeDinoPlugin(GamePlugin):
             shift, _ = cv2.phaseCorrelate(prev_f, curr_f)
             raw_speed = abs(shift[0])  # horizontal pixels/frame
             # Clamp outliers (scene changes, game over can give huge shifts)
-            raw_speed = min(raw_speed, 20.0)
+            raw_speed = min(raw_speed, self.SPEED_MAX)
             # One-way ratchet: Chrome Dino speed never decreases during a run.
             # Only update if new measurement is higher (with gentle EMA to
             # smooth noise). Resets only on game pause/over detection.
@@ -135,8 +145,8 @@ class ChromeDinoPlugin(GamePlugin):
             # near-zero speed frames. Only activate after speed ratchet proves
             # a game was running (speed >= SPEED_MIN).
             if self._autoloop:
-                ZERO_SPEED_THRESH = 0.3   # px/frame — below this = no scroll
-                PAUSE_FRAMES = 60         # ~2s at 30fps
+                ZERO_SPEED_THRESH = 0.3 * self._fps_scale  # scaled from 0.3 at 30fps
+                PAUSE_FRAMES = int(60 / self._fps_scale)   # ~2s regardless of fps
                 if self._speed >= self.SPEED_MIN and raw_speed < ZERO_SPEED_THRESH:
                     self._zero_speed_frames += 1
                     if self._zero_speed_frames >= PAUSE_FRAMES and not self._game_paused:
